@@ -406,10 +406,11 @@ PerfCounter** MutexLockerImpl::_perf_lock_count     = nullptr;
 PerfCounter** MutexLockerImpl::_perf_lock_wait_time = nullptr;
 PerfCounter** MutexLockerImpl::_perf_lock_hold_time = nullptr;
 
-void MutexLockerImpl::init() {
+void MutexLockerImpl::init_counters() {
   if (ProfileVMLocks && UsePerfData) {
     ResourceMark rm;
     EXCEPTION_MARK;
+
     _perf_lock_count     = NEW_C_HEAP_ARRAY(PerfCounter*, _num_mutex + 1, mtInternal);
     _perf_lock_wait_time = NEW_C_HEAP_ARRAY(PerfCounter*, _num_mutex + 1, mtInternal);
     _perf_lock_hold_time = NEW_C_HEAP_ARRAY(PerfCounter*, _num_mutex + 1, mtInternal);
@@ -423,8 +424,23 @@ void MutexLockerImpl::init() {
       NEWPERFEVENTCOUNTER(_perf_lock_hold_time[i + 1], SUN_RT, PerfDataManager::counter_name(_mutex_array[i]->name(), "AfterTime"));
     }
     if (HAS_PENDING_EXCEPTION) {
-      vm_exit_during_initialization("TrainingData::initialize() failed unexpectedly");
+      vm_exit_during_initialization(" MutexLockerImpl::init_counters() failed unexpectedly");
     }
+  }
+}
+
+static void reset_lock_counters(PerfCounter** lock_counters) {
+  for (int i = 0; i < _num_mutex + 1; i++) { // 0 slot is reserved for unnamed locks
+    lock_counters[i]->reset();
+  }
+}
+
+void MutexLockerImpl::reset_counters() {
+  if (ProfileVMLocks && UsePerfData) {
+    log_debug(init)("Reset MutexLocker counters");
+    reset_lock_counters(_perf_lock_count);
+    reset_lock_counters(_perf_lock_wait_time);
+    reset_lock_counters(_perf_lock_hold_time);
   }
 }
 
@@ -463,6 +479,36 @@ void MutexLockerImpl::print_counters_on(outputStream* st) {
   } else {
     st->print_cr("MutexLocker: no info (%s is disabled)", (UsePerfData ? "ProfileVMLocks" : "UsePerfData"));
   }
+}
+
+void MutexLockerImpl::dump(Mutex* mutex) {
+//  // Log to string first so that lines can be indented
+//  stringStream stack_stream;
+//  char buf[O_BUFLEN];
+//
+//  frame f = os::current_frame();
+//  VMError::print_native_stack(&stack_stream, f, Thread::current(), true /*print_source_info */,
+//                              -1 /* max stack_stream */, buf, O_BUFLEN);
+
+  LogMessage(init) msg;
+  NonInterleavingLogStream info_stream{LogLevelType::Debug, msg};
+  info_stream.print_cr("Native stack when locking unnamed mutex %s:", mutex->name());
+
+//  // Print each native stack line to the log
+//  int size = (int) stack_stream.size();
+//  char* stack = stack_stream.as_string();
+//  char* stack_end = stack + size;
+//  char* line_start = stack;
+//  for (char* p = stack; p < stack_end; p++) {
+//    if (*p == '\n') {
+//      *p = '\0';
+//      info_stream.print_cr("\t%s", line_start);
+//      line_start = p + 1;
+//    }
+//  }
+//  if (line_start < stack_end) {
+//    info_stream.print_cr("\t%s", line_start);
+//  }
 }
 
 void MutexLockerImpl::post_initialize() {

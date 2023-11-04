@@ -449,24 +449,35 @@ void ClassPrelinker::preresolve_field_and_method_cp_entries(JavaThread* current,
     BytecodeStream bcs(methodHandle(THREAD, m));
     while (!bcs.is_last_bytecode()) {
       bcs.next();
-      Bytecodes::Code bc = bcs.raw_code();
-      switch (bc) {
-      case Bytecodes::_getfield:
-      case Bytecodes::_putfield:
-        maybe_resolve_fmi_ref(ik, m, bc, bcs.get_index_u2(), preresolve_list, THREAD);
+      Bytecodes::Code raw_bc = bcs.raw_code();
+      switch (raw_bc) {
+      case Bytecodes::_getstatic:
+      case Bytecodes::_putstatic:
+        if (!UseNewCode) {
+          break; // TODO Not implemented yet.
+        }
+        // fall-through
+      case Bytecodes::_getfield:  case Bytecodes::_nofast_getfield:
+      case Bytecodes::_putfield:  case Bytecodes::_nofast_putfield:
+        maybe_resolve_fmi_ref(ik, m, bcs.code(), bcs.get_index_u2(), preresolve_list, THREAD);
         if (HAS_PENDING_EXCEPTION) {
           CLEAR_PENDING_EXCEPTION; // just ignore
         }
         break;
       case Bytecodes::_invokehandle:
-        if (!ArchiveInvokeDynamic || true) { // FIXME this is buggy -- temporarily disabled
+        if (!ArchiveInvokeDynamic && !UseNewCode) {
           break;
         }
         // fall-through
+      case Bytecodes::_invokevirtual: // FIXME - This fails with test/hotspot/jtreg/premain/jmh/run.sh
+      case Bytecodes::_invokeinterface:
+        if (!UseNewCode) {
+          break; // TODO Not implemented yet.
+        }
+        // fall-through
       case Bytecodes::_invokespecial:
-    //case Bytecodes::_invokevirtual: FIXME - This fails with test/hotspot/jtreg/premain/jmh/run.sh
       case Bytecodes::_invokestatic: // This is only for a few specific cases.
-        maybe_resolve_fmi_ref(ik, m, bc, bcs.get_index_u2_cpcache(), preresolve_list, THREAD);
+        maybe_resolve_fmi_ref(ik, m, raw_bc, bcs.get_index_u2_cpcache(), preresolve_list, THREAD);
         if (HAS_PENDING_EXCEPTION) {
           CLEAR_PENDING_EXCEPTION; // just ignore
         }
@@ -486,13 +497,14 @@ void ClassPrelinker::maybe_resolve_fmi_ref(InstanceKlass* ik, Method* m, Bytecod
   int cp_index;
   ConstantPoolCacheEntry* cp_cache_entry = nullptr;
 
-  assert(bc != Bytecodes::_invokehandle, "this is buggy -- temporarily disabled");
-  assert(bc != Bytecodes::_invokevirtual, "this is buggy -- temporarily disabled");
+  assert(bc != Bytecodes::_invokehandle  || UseNewCode, "this is buggy -- temporarily disabled");
+  assert(bc != Bytecodes::_invokevirtual || UseNewCode, "this is buggy -- temporarily disabled");
 
   if (bc == Bytecodes::_invokehandle ||
       bc == Bytecodes::_invokestatic ||
       bc == Bytecodes::_invokespecial ||
-      bc == Bytecodes::_invokevirtual) {
+      bc == Bytecodes::_invokevirtual ||
+      (bc == Bytecodes::_invokeinterface && UseNewCode)) {
     int cpc_index = cp->decode_cpcache_index(raw_index);
     cp_cache_entry = cp->cache()->entry_at(cpc_index);
     if (cp_cache_entry->is_resolved(bc)) {
@@ -500,19 +512,59 @@ void ClassPrelinker::maybe_resolve_fmi_ref(InstanceKlass* ik, Method* m, Bytecod
     }
     cp_index = cp_cache_entry->constant_pool_index();
   } else {
-    assert(bc == Bytecodes::_getfield || bc == Bytecodes::_putfield, "must be");
+    assert(bc == Bytecodes::_getfield        || bc == Bytecodes::_putfield ||
+           //bc == Bytecodes::_nofast_getfield || bc == Bytecodes::_nofast_putfield ||
+           (UseNewCode && (bc == Bytecodes::_getstatic || bc == Bytecodes::_putstatic)), "%s", Bytecodes::name(bc));
     cp_index = cp->cache()->resolved_field_entry_at(raw_index)->constant_pool_index();
+  }
+
+  if (log_is_enabled(Trace, cds, resolve)) {
+    ResourceMark rm(THREAD);
+    Symbol* name = cp->name_ref_at(raw_index, bc);
+    Symbol* signature = cp->signature_ref_at(raw_index, bc);
+    log_trace(cds, resolve)("Resolving %s %s [%d] %s::%s ...",
+                            ik->external_name(), Bytecodes::name(bc), cp_index,
+                            name->as_C_string(), signature->as_C_string());
   }
 
   if (preresolve_list != nullptr && preresolve_list->at(cp_index) == false) {
     // This field wasn't resolved during the trial run. Don't attempt to resolve it. Otherwise
     // the compiler may generate less efficient code.
-    return;
+//    if (UseNewCode2 && (bc == Bytecodes::_getstatic || bc == Bytecodes::_putstatic ||
+//                        bc == Bytecodes::_getfield  || bc == Bytecodes::_putfield  ||
+//                        bc == Bytecodes::_invokevirtual || bc == Bytecodes::_invokestatic ||
+//                        bc == Bytecodes::_invokespecial || bc == Bytecodes::_invokeinterface)) {
+    if (UseNewCode2) {
+      // treat as resolved
+    } else {
+      if (log_is_enabled(Trace, cds, resolve)) {
+        ResourceMark rm(THREAD);
+        log_trace(cds, resolve)("FAILED %s %s [%3d]: disabled",
+                                ik->external_name(), Bytecodes::name(bc), cp_index);
+      }
+      return;
+    }
   }
 
   int klass_cp_index = cp->uncached_klass_ref_index_at(cp_index);
-  if (find_loaded_class(THREAD, cp(), klass_cp_index) == nullptr) {
+  if (cp->tag_at(klass_cp_index).is_klass()) {
+    // already resolved
+  } else if (cp->tag_at(klass_cp_index).is_unresolved_klass_in_error()) {
+    if (log_is_enabled(Trace, cds, resolve)) {
+      ResourceMark rm(THREAD);
+      Symbol* klass_name = cp->klass_name_at(klass_cp_index);
+      log_trace(cds, resolve)("FAILED: %s %s [%3d]: %s unresolved_klass_in_error",
+                              ik->external_name(), Bytecodes::name(bc), cp_index, klass_name->as_C_string());
+    }
+    return;
+  } else if (find_loaded_class(THREAD, cp(), klass_cp_index) == nullptr) {
     // Do not resolve any field/methods from a class that has not been loaded yet.
+    if (log_is_enabled(Trace, cds, resolve)) {
+      ResourceMark rm(THREAD);
+      Symbol* klass_name = cp->klass_name_at(klass_cp_index);
+      log_trace(cds, resolve)("FAILED: %s %s [%3d]: %s unloaded",
+                              ik->external_name(), Bytecodes::name(bc), cp_index, klass_name->as_C_string());
+    }
     return;
   }
   Klass* resolved_klass = cp->klass_ref_at(raw_index, bc, CHECK);
@@ -526,24 +578,55 @@ void ClassPrelinker::maybe_resolve_fmi_ref(InstanceKlass* ik, Method* m, Bytecod
   }
 
   switch (bc) {
-  case Bytecodes::_getfield:
-  case Bytecodes::_putfield:
-    InterpreterRuntime::resolve_get_put(bc, raw_index, mh, cp, CHECK);
+  case Bytecodes::_getstatic:
+  case Bytecodes::_putstatic: {
+    if (!UseNewCode) {
+      break; // TODO Not implemented yet.
+    }
+    bool initialize_class = !UseNewCode;
+    InterpreterRuntime::resolve_get_put(bc, raw_index, mh, cp, initialize_class, CHECK);
     ref_kind = "field ";
     break;
+  }
+  case Bytecodes::_nofast_getfield: {
+    bool initialize_class = !UseNewCode;
+    InterpreterRuntime::resolve_get_put(Bytecodes::_getfield, raw_index, mh, cp, initialize_class, CHECK);
+    ref_kind = "field ";
+    break;
+  }
+  case Bytecodes::_nofast_putfield: {
+    bool initialize_class = !UseNewCode;
+    InterpreterRuntime::resolve_get_put(Bytecodes::_putfield, raw_index, mh, cp, initialize_class, CHECK);
+    ref_kind = "field ";
+    break;
+  }
+  case Bytecodes::_getfield:
+  case Bytecodes::_putfield: {
+    bool initialize_class = !UseNewCode;
+    InterpreterRuntime::resolve_get_put(bc, raw_index, mh, cp, initialize_class, CHECK);
+    ref_kind = "field ";
+    break;
+  }
   case Bytecodes::_invokevirtual:
     InterpreterRuntime::cds_resolve_invoke(bc, raw_index, mh, cp, cp_cache_entry, CHECK);
     ref_kind = "method";
     break;
+  case Bytecodes::_invokeinterface:
   case Bytecodes::_invokespecial:
-    // TODO Not implemented yet.
-    return;
+      if (!UseNewCode) {
+        return; // TODO Not implemented yet.
+      } else {
+        InterpreterRuntime::cds_resolve_invoke(bc, raw_index, mh, cp, cp_cache_entry, CHECK);
+        ref_kind = "method";
+      }
+      break;
   case Bytecodes::_invokehandle:
     InterpreterRuntime::cds_resolve_invokehandle(raw_index, cp, CHECK);
     ref_kind = "method";
     break;
   case Bytecodes::_invokestatic:
-    if (!resolved_klass->name()->equals("java/lang/invoke/MethodHandle") &&
+    if (!UseNewCode &&
+        !resolved_klass->name()->equals("java/lang/invoke/MethodHandle") &&
         !resolved_klass->name()->equals("java/lang/invoke/MethodHandleNatives")
 /* ||
         !LambdaFormInvokers::may_be_regenerated_class(ik->name())*/) {
@@ -571,7 +654,7 @@ void ClassPrelinker::maybe_resolve_fmi_ref(InstanceKlass* ik, Method* m, Bytecod
 void ClassPrelinker::preresolve_indy_cp_entries(JavaThread* current, InstanceKlass* ik, GrowableArray<bool>* preresolve_list) {
   JavaThread* THREAD = current;
   constantPoolHandle cp(THREAD, ik->constants());
-  if (!ArchiveInvokeDynamic || cp->cache() == nullptr) {
+  if (!(ArchiveInvokeDynamic || UseNewCode) || cp->cache() == nullptr) {
     return;
   }
 
@@ -579,13 +662,34 @@ void ClassPrelinker::preresolve_indy_cp_entries(JavaThread* current, InstanceKla
          "regenerated LambdaForm Invoker classes, which should not have indys anyway.");
 
   Array<ResolvedIndyEntry>* indy_entries = cp->cache()->resolved_indy_entries();
-  for (int i = 0; i < indy_entries->length(); i++) {
-    ResolvedIndyEntry* rie = indy_entries->adr_at(i);
-    int cp_index = rie->constant_pool_index();
-    if (preresolve_list->at(cp_index) == true && !rie->is_resolved() && is_indy_archivable(cp(), cp_index)) {
-      InterpreterRuntime::cds_resolve_invokedynamic(ConstantPool::encode_invokedynamic_index(i), cp, THREAD);
-      if (HAS_PENDING_EXCEPTION) {
-        CLEAR_PENDING_EXCEPTION; // just ignore
+  if (indy_entries != nullptr) {
+    for (int i = 0; i < indy_entries->length(); i++) {
+      ResolvedIndyEntry* rie = indy_entries->adr_at(i);
+      int cp_index = rie->constant_pool_index();
+      if (preresolve_list->at(cp_index) == true && !rie->is_resolved() && is_indy_archivable(cp(), cp_index)) {
+        InterpreterRuntime::cds_resolve_invokedynamic(ConstantPool::encode_invokedynamic_index(i), cp, THREAD);
+        if (HAS_PENDING_EXCEPTION) {
+          CLEAR_PENDING_EXCEPTION; // just ignore
+        }
+      } else if (UseNewCode && !rie->is_resolved()) {
+        BootstrapInfo bootstrap_specifier(cp, cp_index, i);
+
+        if (log_is_enabled(Trace, cds, resolve)) {
+          ResourceMark rm(THREAD);
+          log_trace(cds, resolve)("Resolving %s %s [%d] bsm=%d...",
+                                  ik->external_name(), Bytecodes::name(Bytecodes::_invokedynamic), cp_index, bootstrap_specifier.bsm_index());
+        }
+
+        InterpreterRuntime::cds_resolve_invokedynamic(ConstantPool::encode_invokedynamic_index(i), cp, THREAD);
+        if (HAS_PENDING_EXCEPTION) {
+          CLEAR_PENDING_EXCEPTION; // just ignore
+        } else {
+          if (log_is_enabled(Trace, cds, resolve)) {
+            ResourceMark rm(THREAD);
+            log_trace(cds, resolve)("Resolved %s %s [%d] bsm=%d",
+                                    ik->external_name(), Bytecodes::name(Bytecodes::_invokedynamic), cp_index, bootstrap_specifier.bsm_index());
+          }
+        }
       }
     }
   }
@@ -1260,6 +1364,11 @@ void ClassPrelinker::runtime_preload(PreloadedKlasses* table, Handle loader, TRA
         InstanceKlass* ik = preloaded_klasses->at(i);
         if (ik->has_preinitialized_mirror()) {
           ik->initialize_from_cds(CHECK);
+        } else if (UseNewCode && ik->is_loaded()) {
+          ik->link_class(THREAD); // prelink
+          if (HAS_PENDING_EXCEPTION) {
+            CLEAR_PENDING_EXCEPTION;
+          }
         }
       }
     }
@@ -1277,6 +1386,70 @@ void ClassPrelinker::runtime_preload(PreloadedKlasses* table, Handle loader, TRA
     VMThread::execute(&verify_op);
   }
 #endif
+}
+
+void ClassPrelinker::runtime_preresolve(JavaThread* current, Handle loader) {
+  ResourceMark rm(current);
+  {
+    ExceptionMark em(current);
+    runtime_preresolve(&_static_preloaded_klasses, loader, current);
+  }
+  {
+    ExceptionMark em(current);
+    runtime_preresolve(&_dynamic_preloaded_klasses, loader, current);
+  }
+}
+
+void ClassPrelinker::runtime_preresolve(PreloadedKlasses* table, Handle loader, JavaThread* current) {
+  guarantee(!_preload_javabase_only, "");
+
+  Array<InstanceKlass*>* preloaded_klasses;
+  const char* loader_name;
+
+  if (loader() == nullptr) {
+    runtime_preresolve(table->_boot,  "boot",  current);
+    runtime_preresolve(table->_boot2, "boot2", current);
+  } else if (loader() == SystemDictionary::java_platform_loader()) {
+    runtime_preresolve(table->_platform, "plat", current);
+  } else {
+    assert(loader() == SystemDictionary::java_system_loader(), "must be");
+    runtime_preresolve(table->_app, "app", current);
+  }
+}
+
+void ClassPrelinker::runtime_preresolve(Array<InstanceKlass*>* preloaded_klasses, const char* loader_name, JavaThread* current) {
+  if (preloaded_klasses != nullptr) {
+    ResourceMark rm(current);
+    for (int i = 0; i < preloaded_klasses->length(); i++) {
+      InstanceKlass* ik = preloaded_klasses->at(i);
+      constantPoolHandle cp(current, ik->constants());
+      GrowableArray<bool> preresolve_list(cp->length(), cp->length(), true);
+
+      if (log_is_enabled(Info, cds, preresolve)) {
+        ResourceMark rm;
+        log_info(cds, preresolve)("%-5s %s%s%s", loader_name, ik->external_name(),
+                                  ik->is_loaded() ? " (already loaded)" : "",
+                                  ik->is_hidden() ? " (hidden)" : "");
+      }
+      ClassPrelinker::preresolve_class_cp_entries           (current, ik, &preresolve_list);
+      ClassPrelinker::preresolve_field_and_method_cp_entries(current, ik, &preresolve_list);
+      ClassPrelinker::preresolve_indy_cp_entries            (current, ik, &preresolve_list);
+
+      { // Prelink native methods.
+        EXCEPTION_MARK;
+        for (int i = 0; i < ik->methods()->length(); i++) {
+          Method* m = ik->methods()->at(i);
+          if (m->is_native()) {
+            InterpreterRuntime::prepare_native_call_helper(m, current);
+            if (HAS_PENDING_EXCEPTION) {
+              CLEAR_PENDING_EXCEPTION;
+            }
+          }
+          //Method::build_method_counters(current, m);
+        }
+      }
+    }
+  }
 }
 
 void ClassPrelinker::preload_archived_hidden_class(Handle class_loader, InstanceKlass* ik,
@@ -1308,6 +1481,11 @@ void ClassPrelinker::init_javabase_preloaded_classes(TRAPS) {
       InstanceKlass* ik = preloaded_klasses->at(i);
       if (ik->has_preinitialized_mirror()) {
         ik->initialize_from_cds(CHECK);
+      } else if (UseNewCode && ik->is_loaded()) {
+        ik->link_class(THREAD);
+        if (HAS_PENDING_EXCEPTION) {
+          CLEAR_PENDING_EXCEPTION;
+        }
       }
     }
   }

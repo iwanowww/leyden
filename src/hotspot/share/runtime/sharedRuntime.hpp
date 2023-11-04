@@ -530,6 +530,8 @@ class SharedRuntime: AllStatic {
   static uint _resolve_virtual_ctr;
   static uint _resolve_opt_virtual_ctr;
 
+  static void init_counters();
+  static void reset_counters();
   static void print_counters_on(outputStream* st);
 
 #ifndef PRODUCT

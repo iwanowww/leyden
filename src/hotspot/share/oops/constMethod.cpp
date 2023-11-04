@@ -24,6 +24,7 @@
 
 #include "precompiled.hpp"
 #include "interpreter/interpreter.hpp"
+#include "cds/cds_globals.hpp"
 #include "memory/metadataFactory.hpp"
 #include "memory/metaspaceClosure.hpp"
 #include "memory/resourceArea.hpp"

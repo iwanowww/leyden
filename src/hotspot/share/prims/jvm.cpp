@@ -834,6 +834,33 @@ JVM_ENTRY_PROF(jclass, JVM_FindClassFromCaller, JVM_FindClassFromCaller(JNIEnv* 
   jclass result = find_class_from_class_loader(env, h_name, init, h_loader,
                                                h_prot, false, THREAD);
 
+  LogStreamHandle(Info, init, jni) log;
+  if (log.is_enabled()) {
+    const char* entry_name = "JVM_FindClassFromCaller";
+    const char* loader_name = "unknown";
+    if (h_loader() == nullptr) {
+      loader_name = "boot";
+    } else if (h_loader() == SystemDictionary::java_platform_loader()) {
+      loader_name = "plat";
+    } else if (h_loader() == SystemDictionary::java_system_loader()) {
+      loader_name = "app";
+    }
+    log.print("%s: %s: \"%s\" => ", entry_name, loader_name, name);
+
+    if (result != nullptr) {
+      oop mirror = JNIHandles::resolve_non_null(result);
+      bool is_shared = (mirror != nullptr) && (java_lang_Class::is_primitive(mirror) ||
+                                               java_lang_Class::as_Klass(mirror)->is_shared());
+      InstanceKlass* k = InstanceKlass::cast(java_lang_Class::as_Klass(mirror));
+      java_lang_Class::print_signature(mirror, &log);
+      if (is_shared) {
+        log.print(" (shared)");
+      }
+    } else {
+      log.print("null");
+    }
+  }
+
   if (log_is_enabled(Debug, class, resolve) && result != nullptr) {
     trace_class_resolution(java_lang_Class::as_Klass(JNIHandles::resolve_non_null(result)));
   }
@@ -1867,6 +1894,22 @@ static jobjectArray get_class_declared_methods_helper(
   JvmtiVMObjectAllocEventCollector oam;
 
   oop ofMirror = JNIHandles::resolve_non_null(ofClass);
+
+  LogStreamHandle(Info, init, jni) log;
+  if (log.is_enabled()) {
+    const char* entry_name = (want_constructor ? "JVM_GetClassDeclaredConstructors" : "JVM_GetClassDeclaredMethods");
+
+    bool is_shared = java_lang_Class::is_primitive(ofMirror) ||
+                     java_lang_Class::as_Klass(ofMirror)->is_shared();
+
+    InstanceKlass* k = InstanceKlass::cast(java_lang_Class::as_Klass(ofMirror));
+    log.print("%s: ", entry_name);
+    java_lang_Class::print_signature(ofMirror, &log);
+    if (is_shared) {
+      log.print(" (shared)");
+    }
+  }
+
   // Exclude primitive types and array types
   if (java_lang_Class::is_primitive(ofMirror)
       || java_lang_Class::as_Klass(ofMirror)->is_array_klass()) {
@@ -4254,12 +4297,14 @@ JVM_END
     NEWPERFEVENTCOUNTER(_perf_##name##_count, SUN_RT, #name "_count"); \
 
 void perf_jvm_init() {
-  EXCEPTION_MARK;
   if (UsePerfData) {
+    EXCEPTION_MARK;
+
     DO_COUNTERS(INIT_COUNTER)
-  }
-  if (HAS_PENDING_EXCEPTION) {
-    vm_exit_during_initialization("jvm_perf_init failed unexpectedly");
+
+    if (HAS_PENDING_EXCEPTION) {
+      vm_exit_during_initialization("jvm_perf_init failed unexpectedly");
+    }
   }
 }
 
@@ -4270,13 +4315,9 @@ void perf_jvm_init() {
     _perf_##name##_count->reset(); \
 
 void perf_jvm_reset() {
-  EXCEPTION_MARK;
-  if (UsePerfData && log_is_enabled(Info, init)) {
-    log_info(init)("Reset VM call counters");
+  if (ProfileVMCalls && UsePerfData) {
+    log_debug(init)("Reset JVM interface calls counters");
     DO_COUNTERS(RESET_COUNTER)
-  }
-  if (HAS_PENDING_EXCEPTION) {
-    vm_exit_during_initialization("jvm_perf_init failed unexpectedly");
   }
 }
 

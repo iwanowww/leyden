@@ -108,6 +108,9 @@ class ClassPrelinker :  AllStatic {
                                             const char* loader_name, TRAPS);
   static void jvmti_agent_error(InstanceKlass* expected, InstanceKlass* actual, const char* type);
 
+  static void runtime_preresolve(PreloadedKlasses* table, Handle loader, JavaThread* current);
+  static void runtime_preresolve(Array<InstanceKlass*>* preloaded_klasses, const char* loader_name, JavaThread* current);
+
   // fmi = FieldRef/MethodRef/InterfaceMethodRef
   static Klass* get_fmi_ref_resolved_archivable_klass(ConstantPool* cp, int cp_index);
   static void maybe_resolve_fmi_ref(InstanceKlass* ik, Method* m, Bytecodes::Code bc, int raw_index,
@@ -160,6 +163,7 @@ public:
   static void serialize(SerializeClosure* soc, bool is_static_archive);
 
   static void runtime_preload(JavaThread* current, Handle loader) NOT_CDS_RETURN;
+  static void runtime_preresolve(JavaThread* current, Handle loader) NOT_CDS_RETURN;
   static void init_javabase_preloaded_classes(TRAPS) NOT_CDS_RETURN;
   static void replay_training_at_init_for_javabase_preloaded_classes(TRAPS) NOT_CDS_RETURN;
   static bool class_preloading_finished();

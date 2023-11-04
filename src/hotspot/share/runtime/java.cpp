@@ -158,6 +158,9 @@ void print_method_profiling_data() {
   }
 }
 
+void perf_jvm_print_on(outputStream* st);
+void perf_mhn_print_on(outputStream* st);
+
 void log_vm_init_stats() {
   LogStreamHandle(Info, init) log;
   if (log.is_enabled()) {
@@ -174,9 +177,26 @@ void log_vm_init_stats() {
     Runtime1::print_counters_on(&log);
     OptoRuntime::print_counters_on(&log);
     InterpreterRuntime::print_counters_on(&log);
-    perf_deoptimization_print_on(&log);
+    Deoptimization::print_counters_on(&log);
+    log.print_cr("  Nested runtime calls = %d", ProfileVMCallContext::nested_runtime_calls_count());
     perf_jvm_print_on(&log);
+    perf_mhn_print_on(&log);
   }
+}
+
+void perf_jvm_reset();
+void perf_mhn_reset();
+
+void reset_vm_init_stats() {
+  log_info(init)("Reset init counters");
+  SharedRuntime::reset_counters();
+  MutexLockerImpl::reset_counters();
+  Runtime1::reset_counters();
+  OptoRuntime::reset_counters();
+  InterpreterRuntime::reset_counters();
+  Deoptimization::reset_counters();
+  perf_jvm_reset();
+  perf_mhn_reset();
 }
 
 void print_bytecode_count() {
@@ -512,7 +532,7 @@ void before_exit(JavaThread* thread, bool halt) {
   }
 
   if (PrintBytecodeHistogram) {
-    BytecodeHistogram::print();
+    BytecodeHistogram::print(PrintBytecodeHistogramCutoff);
   }
 
 #ifdef LINUX

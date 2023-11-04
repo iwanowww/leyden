@@ -120,6 +120,7 @@ PerfCounter*    ClassLoader::_perf_accumulated_time = nullptr;
 PerfCounter*    ClassLoader::_perf_classes_inited = nullptr;
 PerfCounter*    ClassLoader::_perf_class_init_time = nullptr;
 PerfCounter*    ClassLoader::_perf_class_init_selftime = nullptr;
+PerfCounter*    ClassLoader::_perf_class_init_bytecodes_count = nullptr;
 PerfCounter*    ClassLoader::_perf_classes_verified = nullptr;
 PerfCounter*    ClassLoader::_perf_class_verify_time = nullptr;
 PerfCounter*    ClassLoader::_perf_class_verify_selftime = nullptr;
@@ -162,7 +163,8 @@ void ClassLoader::print_counters() {
     LogStreamHandle(Info, init) log;
     if (log.is_enabled()) {
       log.print_cr("ClassLoader:");
-      log.print_cr("  clinit:               %ldms / %ld events", ClassLoader::class_init_time_ms(), ClassLoader::class_init_count());
+      log.print_cr("  clinit:               %ldms / %ld events; executed %ld bytecodes",
+                   ClassLoader::class_init_time_ms(), ClassLoader::class_init_count(), ClassLoader::class_init_bytecodes_count());
       log.print_cr("  resolve...");
       log.print_cr("    invokedynamic:   %ldms / %ld events", Management::ticks_to_ms(_perf_resolve_indy_time->get_value())         , _perf_resolve_indy_count->get_value());
       log.print_cr("    invokehandle:    %ldms / %ld events", Management::ticks_to_ms(_perf_resolve_invokehandle_time->get_value()) , _perf_resolve_invokehandle_count->get_value());
@@ -1429,6 +1431,7 @@ void ClassLoader::initialize(TRAPS) {
     NEWPERFEVENTCOUNTER(_perf_classes_inited, SUN_CLS, "initializedClasses");
     NEWPERFEVENTCOUNTER(_perf_classes_linked, SUN_CLS, "linkedClasses");
     NEWPERFEVENTCOUNTER(_perf_classes_verified, SUN_CLS, "verifiedClasses");
+    NEWPERFEVENTCOUNTER(_perf_class_init_bytecodes_count, SUN_CLS, "clinitBytecodesCount");
 
     NEWPERFTICKCOUNTER(_perf_shared_classload_time, SUN_CLS, "sharedClassLoadTime");
     NEWPERFTICKCOUNTER(_perf_sys_classload_time, SUN_CLS, "sysClassLoadTime");
@@ -1547,6 +1550,10 @@ int ClassLoader::num_module_path_entries() {
 jlong ClassLoader::classloader_time_ms() {
   return UsePerfData ?
     Management::ticks_to_ms(_perf_accumulated_time->get_value()) : -1;
+}
+
+jlong ClassLoader::class_init_bytecodes_count() {
+  return UsePerfData && CountBytecodes ? _perf_class_init_bytecodes_count->get_value() : -1;
 }
 
 jlong ClassLoader::class_init_count() {

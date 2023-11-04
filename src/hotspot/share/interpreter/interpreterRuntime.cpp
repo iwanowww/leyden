@@ -23,6 +23,7 @@
  */
 
 #include "precompiled.hpp"
+#include "classfile/classPrinter.hpp"
 #include "classfile/javaClasses.inline.hpp"
 #include "classfile/symbolTable.hpp"
 #include "classfile/vmClasses.hpp"
@@ -129,6 +130,101 @@ public:
   frame& get_frame()                             { return _last_frame; }
 };
 
+static void trace_current_location(JavaThread* current) {
+  LogStreamHandle(Debug, init, interpreter) log;
+  if (current->profile_rt_calls() && log.is_enabled()) {
+    ResourceMark rm(current);
+    LastFrameAccessor last_frame(current);
+    Method* caller = last_frame.method();
+    ConstantPool* constants = caller->constants();
+    Bytecodes::Code bc = last_frame.code();
+    log.print("InterpreterRuntime: " INTPTR_FORMAT ": %s: " INTPTR_FORMAT,
+              p2i(current), Bytecodes::name(bc), p2i(caller));
+    if (caller->method_holder()->is_shared()) {
+      log.print(" is_shared");
+    }
+    log.print(" ");
+    caller->print_short_name(&log);
+    log.print(" @ %d:", last_frame.bci());
+    int instruction_size = last_frame.bytecode().instruction_size();
+    if (bc == Bytecodes::_ldc || bc == Bytecodes::_ldc_w || bc == Bytecodes::_ldc2_w ||
+        bc == Bytecodes::_fast_aldc || bc == Bytecodes::_fast_aldc_w) {
+//      bool is_wide = (bc != Bytecodes::_ldc) && (bc != Bytecodes::_fast_aldc);
+//      int cp_index = (is_wide ? last_frame.get_index_u1(bc) : last_frame.get_index_u2(bc));
+//      constantTag tag = constants->tag_at(cp_index);
+//      if (tag.value() == JVM_CONSTANT_Class) {
+//        log.print(" resolved");
+//      }
+//      log.print(" %d %s", tag.value(), tag.internal_name());
+    } else if (bc == Bytecodes::_invokedynamic) {
+      int index = last_frame.get_index_u4(bc);
+      int indy_index = constants->decode_invokedynamic_index(index);
+      ResolvedIndyEntry* indy_entry = constants->resolved_indy_entry_at(indy_index);
+      if (indy_entry->is_resolved()) {
+        log.print(" resolved");
+      }
+    } else if (Bytecodes::is_invoke(bc)) {
+      ConstantPoolCacheEntry* cpce = last_frame.cache_entry();
+      if (cpce->is_resolved(bc)) {
+        log.print(" resolved");
+        Method* m = cpce->f1_as_method();
+        if (m != nullptr) {
+          log.print(" %s", m->method_holder()->init_state_name());
+        } else {
+          log.print(" null");
+        }
+      }
+    } else if (Bytecodes::is_field_code(bc) || bc == Bytecodes::_nofast_getfield || bc == Bytecodes::_nofast_putfield) {
+      if (bc == Bytecodes::_nofast_getfield) {
+        bc = Bytecodes::_getfield;
+      } else if (bc == Bytecodes::_nofast_putfield) {
+        bc = Bytecodes::_putfield;
+      }
+      int index = last_frame.get_index_u2(bc);
+      ResolvedFieldEntry* field_entry = constants->cache()->resolved_field_entry_at(index);
+
+      if (field_entry->is_resolved(bc)) {
+        log.print(" resolved");
+        log.print(" %s", field_entry->field_holder()->init_state_name());
+      }
+    } else if (bc == Bytecodes::_new) {
+      EXCEPTION_MARK;
+      int index = last_frame.get_index_u2(bc);
+      Klass *k = constants->klass_at(index, THREAD);
+      if (!HAS_PENDING_EXCEPTION) {
+        InstanceKlass *ik = InstanceKlass::cast(k);
+        log.print(": %s", ik->init_state_name());
+      } else {
+        CLEAR_PENDING_EXCEPTION;
+      }
+    }
+    log.print(" ");
+//    int flags = (ClassPrinter::PRINT_METHOD_NAME | ClassPrinter::PRINT_BYTECODE);
+//      int flags = ClassPrinter::PRINT_BYTECODE;
+    int flags = 0;
+    caller->print_codes_on(last_frame.bci(), last_frame.bci() + instruction_size, &log, flags);
+
+    LogStreamHandle(Trace, init, interpreter) log1;
+    if (log1.is_enabled()) {
+      if (bc == Bytecodes::_invokedynamic) {
+        int index = last_frame.get_index_u4(bc);
+        int indy_index = constants->decode_invokedynamic_index(index);
+        ResolvedIndyEntry* indy_entry = constants->resolved_indy_entry_at(indy_index);
+        indy_entry->print_on(&log1);
+      } else if (Bytecodes::is_invoke(bc)) {
+        ConstantPoolCacheEntry* cpce = last_frame.cache_entry();
+        cpce->print(&log1, 0, constants->cache());
+      } else if (Bytecodes::is_field_code(bc) || bc == Bytecodes::_nofast_getfield || bc == Bytecodes::_nofast_putfield) {
+        int index = last_frame.get_index_u2(bc);
+        ResolvedFieldEntry* field_entry = constants->cache()->resolved_field_entry_at(index);
+        field_entry->print_on(&log1);
+      }
+    }
+  }
+}
+
+void dump_resolve_counters(JavaThread* current);
+
 //------------------------------------------------------------------------------------------------------------------------
 // State accessors
 
@@ -151,6 +247,8 @@ void InterpreterRuntime::set_bcp_and_mdp(address bcp, JavaThread* current) {
 
 
 JRT_ENTRY_PROF(void, InterpreterRuntime, ldc, InterpreterRuntime::ldc(JavaThread* current, bool wide))
+  trace_current_location(current);
+
   // access constant pool
   LastFrameAccessor last_frame(current);
   ConstantPool* pool = last_frame.method()->constants();
@@ -164,6 +262,8 @@ JRT_ENTRY_PROF(void, InterpreterRuntime, ldc, InterpreterRuntime::ldc(JavaThread
 JRT_END
 
 JRT_ENTRY_PROF(void, InterpreterRuntime, resolve_ldc, InterpreterRuntime::resolve_ldc(JavaThread* current, Bytecodes::Code bytecode)) {
+  trace_current_location(current);
+
   assert(bytecode == Bytecodes::_ldc ||
          bytecode == Bytecodes::_ldc_w ||
          bytecode == Bytecodes::_ldc2_w ||
@@ -222,6 +322,8 @@ JRT_END
 JRT_ENTRY_PROF(void, InterpreterRuntime, new, InterpreterRuntime::_new(JavaThread* current, ConstantPool* pool, int index))
   Klass* k = pool->klass_at(index, CHECK);
   InstanceKlass* klass = InstanceKlass::cast(k);
+
+  trace_current_location(current);
 
   // Make sure we are not instantiating an abstract klass
   klass->check_valid_for_instantiation(true, CHECK);
@@ -668,18 +770,38 @@ JRT_END
 //------------------------------------------------------------------------------------------------------------------------
 // Fields
 //
+PROF_ENTRY(void, InterpreterRuntime, resolve_getfield, InterpreterRuntime::resolve_getfield(JavaThread* current))
+  resolve_get_put(current, Bytecodes::_getfield);
+}
+PROF_ENTRY(void, InterpreterRuntime, resolve_putfield, InterpreterRuntime::resolve_putfield(JavaThread* current))
+  resolve_get_put(current, Bytecodes::_putfield);
+}
+PROF_ENTRY(void, InterpreterRuntime, resolve_getfield_nofast, InterpreterRuntime::resolve_getfield_nofast(JavaThread* current))
+  resolve_get_put(current, Bytecodes::_getfield);
+}
+PROF_ENTRY(void, InterpreterRuntime, resolve_putfield_nofast, InterpreterRuntime::resolve_putfield_nofast(JavaThread* current))
+  resolve_get_put(current, Bytecodes::_putfield);
+}
+PROF_ENTRY(void, InterpreterRuntime, resolve_getstatic, InterpreterRuntime::resolve_getstatic(JavaThread* current))
+  resolve_get_put(current, Bytecodes::_getstatic);
+}
+PROF_ENTRY(void, InterpreterRuntime, resolve_putstatic, InterpreterRuntime::resolve_putstatic(JavaThread* current))
+  resolve_get_put(current, Bytecodes::_putstatic);
+}
 
 void InterpreterRuntime::resolve_get_put(JavaThread* current, Bytecodes::Code bytecode) {
+  dump_resolve_counters(current);
+
   LastFrameAccessor last_frame(current);
   constantPoolHandle pool(current, last_frame.method()->constants());
   methodHandle m(current, last_frame.method());
 
-  resolve_get_put(bytecode, last_frame.get_index_u2(bytecode), m, pool, current);
+  resolve_get_put(bytecode, last_frame.get_index_u2(bytecode), m, pool, true, current);
 }
 
 void InterpreterRuntime::resolve_get_put(Bytecodes::Code bytecode, int field_index,
                                          methodHandle& m,
-                                         constantPoolHandle& pool, TRAPS) {
+                                         constantPoolHandle& pool, bool initialize_class, TRAPS) {
   fieldDescriptor info;
   bool is_put    = (bytecode == Bytecodes::_putfield  || bytecode == Bytecodes::_nofast_putfield ||
                     bytecode == Bytecodes::_putstatic);
@@ -688,7 +810,7 @@ void InterpreterRuntime::resolve_get_put(Bytecodes::Code bytecode, int field_ind
   {
     JvmtiHideSingleStepping jhss(THREAD);
     LinkResolver::resolve_field_access(info, pool, field_index,
-                                       m, bytecode, CHECK);
+                                       m, bytecode, initialize_class, CHECK);
   } // end JvmtiHideSingleStepping
 
   // check if link resolution caused cpCache to be updated
@@ -725,7 +847,7 @@ void InterpreterRuntime::resolve_get_put(Bytecodes::Code bytecode, int field_ind
 
   Bytecodes::Code get_code = (Bytecodes::Code)0;
   Bytecodes::Code put_code = (Bytecodes::Code)0;
-  if (!uninitialized_static) {
+  if (VM_Version::supports_fast_class_init_checks() || !uninitialized_static) {
     get_code = ((is_static) ? Bytecodes::_getstatic : Bytecodes::_getfield);
     if ((is_put && !has_initialized_final_update) || !info.access_flags().is_final()) {
       put_code = ((is_static) ? Bytecodes::_putstatic : Bytecodes::_putfield);
@@ -781,7 +903,7 @@ JRT_ENTRY_NO_ASYNC_PROF(void, InterpreterRuntime, monitorenter_obj, InterpreterR
   return;
 JRT_END
 
-JRT_LEAF_PROF(void, InterpreterRuntime, monitorexit, InterpreterRuntime::monitorexit(BasicObjectLock* elem))
+JRT_LEAF_PROF1(void, InterpreterRuntime, monitorexit, InterpreterRuntime::monitorexit(BasicObjectLock* elem))
   oop obj = elem->obj();
   assert(Universe::heap()->is_in(obj), "must be an object");
   // The object could become unlocked through a JNI call, which we have no other checks for.
@@ -836,7 +958,22 @@ JRT_ENTRY_PROF(void, InterpreterRuntime, breakpoint, InterpreterRuntime::_breakp
   JvmtiExport::post_raw_breakpoint(current, method, bcp);
 JRT_END
 
+PROF_ENTRY(void, InterpreterRuntime, resolve_invokevirtual, InterpreterRuntime::resolve_invokevirtual(JavaThread* current))
+  resolve_invoke(current, Bytecodes::_invokevirtual);
+}
+PROF_ENTRY(void, InterpreterRuntime, resolve_invokespecial, InterpreterRuntime::resolve_invokespecial(JavaThread* current))
+  resolve_invoke(current, Bytecodes::_invokespecial);
+}
+PROF_ENTRY(void, InterpreterRuntime, resolve_invokestatic, InterpreterRuntime::resolve_invokestatic(JavaThread* current))
+  resolve_invoke(current, Bytecodes::_invokestatic);
+}
+PROF_ENTRY(void, InterpreterRuntime, resolve_invokeinterface, InterpreterRuntime::resolve_invokeinterface(JavaThread* current))
+  resolve_invoke(current, Bytecodes::_invokeinterface);
+}
+
 void InterpreterRuntime::resolve_invoke(JavaThread* current, Bytecodes::Code bytecode) {
+  dump_resolve_counters(current);
+
   LastFrameAccessor last_frame(current);
   // extract receiver from the outgoing argument list if necessary
   Handle receiver(current, nullptr);
@@ -960,17 +1097,29 @@ void InterpreterRuntime::cds_resolve_invoke(Bytecodes::Code bytecode, int raw_in
   CallInfo call_info;
   if (bytecode == Bytecodes::_invokevirtual) {
     LinkResolver::cds_resolve_virtual_call(call_info, link_info, CHECK);
+  } else if (bytecode == Bytecodes::_invokeinterface) {
+    guarantee(UseNewCode, "");
+    LinkResolver::cds_resolve_interface_call(call_info, link_info, CHECK);
+  } else if (bytecode == Bytecodes::_invokespecial) {
+    guarantee(UseNewCode, "");
+    LinkResolver::resolve_special_call(call_info, Handle(), link_info, CHECK);
   } else {
     assert(bytecode == Bytecodes::_invokestatic, "other bytecodes aren't supported yet");
-    LinkResolver::resolve_invoke(call_info, Handle(), pool, raw_index, bytecode, CHECK);
+    bool initialize_klass = !UseNewCode;
+    LinkResolver::resolve_static_call(call_info, link_info, initialize_klass, CHECK);
   }
 
   methodHandle resolved_method(THREAD, call_info.resolved_method());
+  if (UseNewCode && !resolved_method()->method_holder()->is_linked()) {
+    resolved_method()->method_holder()->link_class(CHECK);
+  }
   update_invoke_cp_cache_entry(call_info, bytecode, resolved_method, pool, cp_cache_entry);
 }
 
 // First time execution:  Resolve symbols, create a permanent MethodType object.
-void InterpreterRuntime::resolve_invokehandle(JavaThread* current) {
+PROF_ENTRY(void, InterpreterRuntime, resolve_invokehandle, InterpreterRuntime::resolve_invokehandle(JavaThread* current))
+  dump_resolve_counters(current);
+
   const Bytecodes::Code bytecode = Bytecodes::_invokehandle;
   LastFrameAccessor last_frame(current);
 
@@ -1001,7 +1150,9 @@ void InterpreterRuntime::cds_resolve_invokehandle(int raw_index,
 }
 
 // First time execution:  Resolve symbols, create a permanent CallSite object.
-void InterpreterRuntime::resolve_invokedynamic(JavaThread* current) {
+PROF_ENTRY(void, InterpreterRuntime, resolve_invokedynamic, InterpreterRuntime::resolve_invokedynamic(JavaThread* current))
+  dump_resolve_counters(current);
+
   LastFrameAccessor last_frame(current);
   const Bytecodes::Code bytecode = Bytecodes::_invokedynamic;
 
@@ -1032,25 +1183,74 @@ void InterpreterRuntime::cds_resolve_invokedynamic(int raw_index,
 // cpCache entry.  This doesn't safepoint, but the helper routines safepoint.
 // This function will check for redefinition!
 JRT_ENTRY_PROF(void, InterpreterRuntime, resolve_from_cache, InterpreterRuntime::resolve_from_cache(JavaThread* current, Bytecodes::Code bytecode)) {
+//  if (UseNewCode && UseNewCode2 && UseNewCode3 && current->profile_rt_calls()) {
+//    // Log to string first so that lines can be indented
+//    stringStream stack_stream;
+//    char buf[O_BUFLEN];
+//
+//    frame f = os::current_frame();
+//    VMError::print_native_stack(&stack_stream, f, Thread::current(), true /*print_source_info */,
+//                                -1 /* max stack_stream */, buf, O_BUFLEN);
+//
+//    LogMessage(init) msg;
+//    NonInterleavingLogStream info_stream{LogLevelType::Debug, msg};
+//    info_stream.print_cr("Native stack for InterpreterRuntime::resolve_from_cache: %s", Bytecodes::name(bytecode));
+//
+//    // Print each native stack line to the log
+//    int size = (int) stack_stream.size();
+//    char* stack = stack_stream.as_string();
+//    char* stack_end = stack + size;
+//    char* line_start = stack;
+//    for (char* p = stack; p < stack_end; p++) {
+//      if (*p == '\n') {
+//        *p = '\0';
+//        info_stream.print_cr("\t%s", line_start);
+//        line_start = p + 1;
+//      }
+//    }
+//    if (line_start < stack_end) {
+//      info_stream.print_cr("\t%s", line_start);
+//    }
+//  }
+//
+
+  trace_current_location(current);
+
+  dump_resolve_counters(current);
+
+  guarantee(current->current_rt_call_timer() != nullptr || !current->profile_rt_calls(), "");
+  PauseTimer pt(current->current_rt_call_timer(), current->profile_rt_calls());
+  PauseRuntimeCallProfiling prcp(current, current->profile_rt_calls());
+
   switch (bytecode) {
-  case Bytecodes::_getstatic:
-  case Bytecodes::_putstatic:
-  case Bytecodes::_getfield:
-  case Bytecodes::_putfield:
-    resolve_get_put(current, bytecode);
+  case Bytecodes::_getstatic: resolve_getstatic(current); break;
+  case Bytecodes::_putstatic: resolve_putstatic(current); break;
+
+  case Bytecodes::_getfield: {
+    LastFrameAccessor last_frame(current);
+    if (last_frame.code() == Bytecodes::_nofast_getfield) {
+      resolve_getfield_nofast(current);
+    } else {
+      resolve_getfield(current);
+    }
     break;
-  case Bytecodes::_invokevirtual:
-  case Bytecodes::_invokespecial:
-  case Bytecodes::_invokestatic:
-  case Bytecodes::_invokeinterface:
-    resolve_invoke(current, bytecode);
+  }
+  case Bytecodes::_putfield: {
+    LastFrameAccessor last_frame(current);
+    if (last_frame.code() == Bytecodes::_nofast_putfield) {
+      resolve_putfield_nofast(current);
+    } else {
+      resolve_putfield(current);
+    }
     break;
-  case Bytecodes::_invokehandle:
-    resolve_invokehandle(current);
-    break;
-  case Bytecodes::_invokedynamic:
-    resolve_invokedynamic(current);
-    break;
+  }
+  case Bytecodes::_invokevirtual:   resolve_invokevirtual(current);   break;
+  case Bytecodes::_invokespecial:   resolve_invokespecial(current);   break;
+  case Bytecodes::_invokestatic:    resolve_invokestatic(current);    break;
+  case Bytecodes::_invokeinterface: resolve_invokeinterface(current); break;
+  case Bytecodes::_invokehandle:    resolve_invokehandle(current);    break;
+  case Bytecodes::_invokedynamic:   resolve_invokedynamic(current);   break;
+
   default:
     fatal("unexpected bytecode: %s", Bytecodes::name(bytecode));
     break;
@@ -1062,12 +1262,13 @@ JRT_END
 // Miscellaneous
 
 
-nmethod* InterpreterRuntime::frequency_counter_overflow(JavaThread* current, address branch_bcp) {
+PROF_ENTRY(nmethod*, InterpreterRuntime, frequency_counter_overflow,
+           InterpreterRuntime::frequency_counter_overflow(JavaThread* current, address branch_bcp))
   // Enable WXWrite: the function is called directly by interpreter.
   MACOS_AARCH64_ONLY(ThreadWXEnable wx(WXWrite, current));
 
   // frequency_counter_overflow_inner can throw async exception.
-  nmethod* nm = frequency_counter_overflow_inner(current, branch_bcp);
+  nmethod* nm = (UseNewCode3 ? nullptr : frequency_counter_overflow_inner(current, branch_bcp));
   assert(branch_bcp != nullptr || nm == nullptr, "always returns null for non OSR requests");
   if (branch_bcp != nullptr && nm != nullptr) {
     // This was a successful request for an OSR nmethod.  Because
@@ -1106,7 +1307,7 @@ nmethod* InterpreterRuntime::frequency_counter_overflow(JavaThread* current, add
   return nm;
 }
 
-JRT_ENTRY_PROF(nmethod*, InterpreterRuntime, frequency_counter_overflow,
+JRT_ENTRY_PROF(nmethod*, InterpreterRuntime, frequency_counter_overflow_inner,
           InterpreterRuntime::frequency_counter_overflow_inner(JavaThread* current, address branch_bcp))
   // use UnlockFlagSaver to clear and restore the _do_not_unlock_if_synchronized
   // flag, in case this method triggers classloading which will call into Java.
@@ -1129,7 +1330,7 @@ JRT_ENTRY_PROF(nmethod*, InterpreterRuntime, frequency_counter_overflow,
   return osr_nm;
 JRT_END
 
-JRT_LEAF_PROF(jint, InterpreterRuntime, bcp_to_di, InterpreterRuntime::bcp_to_di(Method* method, address cur_bcp))
+JRT_LEAF_PROF1(jint, InterpreterRuntime, bcp_to_di, InterpreterRuntime::bcp_to_di(Method* method, address cur_bcp))
   assert(ProfileInterpreter, "must be profiling interpreter");
   int bci = method->bci_from(cur_bcp);
   MethodData* mdo = method->method_data();
@@ -1318,7 +1519,7 @@ JRT_BLOCK_ENTRY_PROF(void, InterpreterRuntime, post_method_exit, InterpreterRunt
   JvmtiExport::post_method_exit(current, last_frame.method(), last_frame.get_frame());
 JRT_END
 
-JRT_LEAF_PROF(int, InterpreterRuntime, interpreter_contains, InterpreterRuntime::interpreter_contains(address pc))
+JRT_LEAF_PROF1(int, InterpreterRuntime, interpreter_contains, InterpreterRuntime::interpreter_contains(address pc))
 {
   return (Interpreter::contains(Continuation::get_top_return_pc_post_barrier(JavaThread::current(), pc)) ? 1 : 0);
 }
@@ -1515,9 +1716,8 @@ GrowableArray<uint64_t>* SignatureHandlerLibrary::_fingerprints = nullptr;
 GrowableArray<address>*  SignatureHandlerLibrary::_handlers     = nullptr;
 address                  SignatureHandlerLibrary::_buffer       = nullptr;
 
-
-JRT_ENTRY_PROF(void, InterpreterRuntime, prepare_native_call, InterpreterRuntime::prepare_native_call(JavaThread* current, Method* method))
-  methodHandle m(current, method);
+void InterpreterRuntime::prepare_native_call_helper(Method* method, TRAPS) {
+  methodHandle m(THREAD, method);
   assert(m->is_native(), "sanity check");
   // lookup native function entry point if it doesn't exist
   if (!m->has_native_function()) {
@@ -1529,6 +1729,10 @@ JRT_ENTRY_PROF(void, InterpreterRuntime, prepare_native_call, InterpreterRuntime
   // before trying to fetch the native entry point and klass mirror.
   // We must set the signature handler last, so that multiple processors
   // preparing the same method will be sure to see non-null entry & mirror.
+}
+
+JRT_ENTRY_PROF(void, InterpreterRuntime, prepare_native_call, InterpreterRuntime::prepare_native_call(JavaThread* current, Method* method))
+  prepare_native_call_helper(method, current);
 JRT_END
 
 #if defined(IA32) || defined(AMD64) || defined(ARM)
@@ -1629,7 +1833,20 @@ JRT_END
   macro(InterpreterRuntime, set_original_bytecode_at) \
   macro(InterpreterRuntime, breakpoint) \
   macro(InterpreterRuntime, resolve_from_cache) \
+  macro(InterpreterRuntime, resolve_getfield) \
+  macro(InterpreterRuntime, resolve_getfield_nofast) \
+  macro(InterpreterRuntime, resolve_putfield) \
+  macro(InterpreterRuntime, resolve_putfield_nofast) \
+  macro(InterpreterRuntime, resolve_getstatic) \
+  macro(InterpreterRuntime, resolve_putstatic) \
+  macro(InterpreterRuntime, resolve_invokevirtual) \
+  macro(InterpreterRuntime, resolve_invokespecial) \
+  macro(InterpreterRuntime, resolve_invokestatic) \
+  macro(InterpreterRuntime, resolve_invokeinterface) \
+  macro(InterpreterRuntime, resolve_invokehandle) \
+  macro(InterpreterRuntime, resolve_invokedynamic) \
   macro(InterpreterRuntime, frequency_counter_overflow) \
+  macro(InterpreterRuntime, frequency_counter_overflow_inner) \
   macro(InterpreterRuntime, bcp_to_di) \
   macro(InterpreterRuntime, update_mdp_for_ret) \
   macro(InterpreterRuntime, build_method_counters) \
@@ -1643,6 +1860,75 @@ JRT_END
   macro(InterpreterRuntime, prepare_native_call) \
   macro(InterpreterRuntime, member_name_arg_or_null)
 
+
+static jlong accumulate_resolve_count() {
+  jlong acc = 0;
+  if (ProfileRuntimeCalls && UsePerfData) {
+    acc += _perf_InterpreterRuntime_resolve_getfield_count->get_value();
+    acc += _perf_InterpreterRuntime_resolve_getfield_nofast_count->get_value();
+    acc += _perf_InterpreterRuntime_resolve_putfield_count->get_value();
+    acc += _perf_InterpreterRuntime_resolve_putfield_nofast_count->get_value();
+    acc += _perf_InterpreterRuntime_resolve_getstatic_count->get_value();
+    acc += _perf_InterpreterRuntime_resolve_putstatic_count->get_value();
+    acc += _perf_InterpreterRuntime_resolve_invokevirtual_count->get_value();
+    acc += _perf_InterpreterRuntime_resolve_invokespecial_count->get_value();
+    acc += _perf_InterpreterRuntime_resolve_invokestatic_count->get_value();
+    acc += _perf_InterpreterRuntime_resolve_invokeinterface_count->get_value();
+    acc += _perf_InterpreterRuntime_resolve_invokehandle_count->get_value();
+    acc += _perf_InterpreterRuntime_resolve_invokedynamic_count->get_value();
+  }
+  return acc;
+}
+
+static jlong accumulate_resolve_time() {
+  jlong acc = 0;
+  if (ProfileRuntimeCalls && UsePerfData) {
+    acc += _perf_InterpreterRuntime_resolve_getfield_timer->get_value();
+    acc += _perf_InterpreterRuntime_resolve_getfield_nofast_timer->get_value();
+    acc += _perf_InterpreterRuntime_resolve_putfield_timer->get_value();
+    acc += _perf_InterpreterRuntime_resolve_putfield_nofast_timer->get_value();
+    acc += _perf_InterpreterRuntime_resolve_getstatic_timer->get_value();
+    acc += _perf_InterpreterRuntime_resolve_putstatic_timer->get_value();
+    acc += _perf_InterpreterRuntime_resolve_invokevirtual_timer->get_value();
+    acc += _perf_InterpreterRuntime_resolve_invokespecial_timer->get_value();
+    acc += _perf_InterpreterRuntime_resolve_invokestatic_timer->get_value();
+    acc += _perf_InterpreterRuntime_resolve_invokeinterface_timer->get_value();
+    acc += _perf_InterpreterRuntime_resolve_invokehandle_timer->get_value();
+    acc += _perf_InterpreterRuntime_resolve_invokedynamic_timer->get_value();
+  }
+  return acc;
+}
+
+void dump_resolve_counters(JavaThread* current) {
+  if (ProfileRuntimeCalls && UsePerfData && current->profile_rt_calls()) {
+    log_debug(init, interpreter)("%ld vs %ld = (%ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld)",
+      _perf_InterpreterRuntime_resolve_from_cache_count->get_value(),
+      accumulate_resolve_count(),
+      _perf_InterpreterRuntime_resolve_getfield_count->get_value(),
+      _perf_InterpreterRuntime_resolve_getfield_nofast_count->get_value(),
+      _perf_InterpreterRuntime_resolve_putfield_count->get_value(),
+      _perf_InterpreterRuntime_resolve_putfield_nofast_count->get_value(),
+      _perf_InterpreterRuntime_resolve_getstatic_count->get_value(),
+      _perf_InterpreterRuntime_resolve_putstatic_count->get_value(),
+      _perf_InterpreterRuntime_resolve_invokevirtual_count->get_value(),
+      _perf_InterpreterRuntime_resolve_invokespecial_count->get_value(),
+      _perf_InterpreterRuntime_resolve_invokestatic_count->get_value(),
+      _perf_InterpreterRuntime_resolve_invokeinterface_count->get_value(),
+      _perf_InterpreterRuntime_resolve_invokehandle_count->get_value(),
+      _perf_InterpreterRuntime_resolve_invokedynamic_count->get_value());
+
+    if (_perf_InterpreterRuntime_resolve_from_cache_count->get_value() + 1 == accumulate_resolve_count()) {
+      LogStreamHandle(Debug, init, interpreter) log;
+      if (log.is_enabled()) {
+        static char buf[O_BUFLEN];
+        Thread* t = Thread::current_or_null();
+        frame fr = os::current_frame();
+        VMError::print_native_stack(&log, fr, t, false, -1, buf, sizeof(buf));
+      }
+    }
+  }
+}
+
 #define INIT_COUNTER(sub, name) \
   NEWPERFTICKCOUNTER (_perf_##sub##_##name##_timer, SUN_CI, #sub "::" #name "_time"); \
   NEWPERFEVENTCOUNTER(_perf_##sub##_##name##_count, SUN_CI, #sub "::" #name "_count");
@@ -1654,11 +1940,24 @@ void InterpreterRuntime::init_counters() {
     DO_COUNTERS(INIT_COUNTER)
 
     if (HAS_PENDING_EXCEPTION) {
-      vm_exit_during_initialization("jvm_perf_init failed unexpectedly");
+      vm_exit_during_initialization("InterpreterRuntime::init_counters() failed unexpectedly");
     }
   }
 }
 #undef INIT_COUNTER
+
+#define RESET_COUNTER(sub, name) \
+    _perf_##sub##_##name##_timer->reset(); \
+    _perf_##sub##_##name##_count->reset();
+
+void InterpreterRuntime::reset_counters() {
+  if (ProfileRuntimeCalls && UsePerfData) {
+    log_debug(init)("Reset InterpreterRuntime counters");
+    DO_COUNTERS(RESET_COUNTER)
+  }
+}
+
+#undef RESET_COUNTER
 
 #define PRINT_COUNTER(sub, name) { \
   jlong count = _perf_##sub##_##name##_count->get_value(); \
@@ -1668,8 +1967,10 @@ void InterpreterRuntime::init_counters() {
   }}
 
 void InterpreterRuntime::print_counters_on(outputStream* st) {
-  if (UsePerfData && ProfileRuntimeCalls) {
+  if (ProfileRuntimeCalls && UsePerfData) {
     DO_COUNTERS(PRINT_COUNTER)
+    st->print_cr("    %-50s = %4ldms (%5ld events)", "InterpreterRuntime::resolve_bc",
+                 Management::ticks_to_ms(accumulate_resolve_time()), accumulate_resolve_count());
   } else {
     st->print_cr("  InterpreterRuntime: no info (%s is disabled)", (UsePerfData ? "ProfileRuntimeCalls" : "UsePerfData"));
   }

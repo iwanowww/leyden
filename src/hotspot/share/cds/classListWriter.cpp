@@ -276,6 +276,7 @@ void ClassListWriter::write_resolved_constants_for(InstanceKlass* ik) {
   ConstantPool* cp = ik->constants();
   GrowableArray<bool> list(cp->length(), cp->length(), false);
   int methodref_cpcache_index = 0; // cpcache index for Methodref/InterfaceMethodref
+  int fieldref_resolved_index = 0; // resolved index for Fieldref
 
   for (int cp_index = 1; cp_index < cp->length(); cp_index++) { // Index 0 is unused
     switch (cp->tag_at(cp_index).value()) {
@@ -305,6 +306,19 @@ void ClassListWriter::write_resolved_constants_for(InstanceKlass* ik) {
       break;
     case JVM_CONSTANT_InterfaceMethodref:
       methodref_cpcache_index++;
+      break;
+    case JVM_CONSTANT_Fieldref:
+      if (cp->cache() != nullptr) {
+        ResolvedFieldEntry* field_entry = cp->cache()->resolved_field_entry_at(fieldref_resolved_index);
+        guarantee(field_entry->constant_pool_index() == cp_index, "mismatch");
+        if (field_entry->is_resolved(Bytecodes::_getstatic) ||
+            field_entry->is_resolved(Bytecodes::_putstatic) ||
+            field_entry->is_resolved(Bytecodes::_getfield)  ||
+            field_entry->is_resolved(Bytecodes::_putfield)) {
+          list.at_put(cp_index, true);
+        }
+      }
+      fieldref_resolved_index++;
       break;
     }
   }

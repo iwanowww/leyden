@@ -334,6 +334,7 @@ private:
 
  public:
   static void init_counters();
+  static void reset_counters();
   static void print_counters_on(outputStream* st);
 };
 

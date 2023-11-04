@@ -196,6 +196,7 @@ class Runtime1: public AllStatic {
   static void print_statistics_on(outputStream* st) PRODUCT_RETURN;
 
   static void init_counters();
+  static void reset_counters();
   static void print_counters_on(outputStream* st);
 };
 

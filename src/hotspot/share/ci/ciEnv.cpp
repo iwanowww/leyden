@@ -1087,7 +1087,7 @@ void ciEnv::register_method(ciMethod* target,
       dependencies()->encode_content_bytes();
     }
     // Check for {class loads, evolution, breakpoints, ...} during compilation
-    if (install_code && !preload) {
+    if (install_code /*&& !preload*/) {
       // Check for {class loads, evolution, breakpoints, ...} during compilation
       validate_compile_task_dependencies(target);
     }

@@ -844,8 +844,8 @@ static bool falls_through(Bytecodes::Code bc) {
 #endif
 
 // Return BasicType of value being returned
-JRT_LEAF_PROF(BasicType, Deoptimization, unpack_frames, Deoptimization::unpack_frames(JavaThread* thread, int exec_mode))
-  assert(thread == JavaThread::current(), "pre-condition");
+JRT_LEAF_PROF(BasicType, Deoptimization, unpack_frames, Deoptimization::unpack_frames(JavaThread* current, int exec_mode))
+  assert(current == JavaThread::current(), "pre-condition");
 
   // We are already active in the special DeoptResourceMark any ResourceObj's we
   // allocate will be freed at the end of the routine.
@@ -857,27 +857,27 @@ JRT_LEAF_PROF(BasicType, Deoptimization, unpack_frames, Deoptimization::unpack_f
   // then use a HandleMark to ensure any Handles we do create are
   // cleaned up in this scope.
   ResetNoHandleMark rnhm;
-  HandleMark hm(thread);
+  HandleMark hm(current);
 
-  frame stub_frame = thread->last_frame();
+  frame stub_frame = current->last_frame();
 
-  Continuation::notify_deopt(thread, stub_frame.sp());
+  Continuation::notify_deopt(current, stub_frame.sp());
 
   // Since the frame to unpack is the top frame of this thread, the vframe_array_head
   // must point to the vframeArray for the unpack frame.
-  vframeArray* array = thread->vframe_array_head();
+  vframeArray* array = current->vframe_array_head();
   UnrollBlock* info = array->unroll_block();
 
   // We set the last_Java frame. But the stack isn't really parsable here. So we
   // clear it to make sure JFR understands not to try and walk stacks from events
   // in here.
-  intptr_t* sp = thread->frame_anchor()->last_Java_sp();
-  thread->frame_anchor()->set_last_Java_sp(nullptr);
+  intptr_t* sp = current->frame_anchor()->last_Java_sp();
+  current->frame_anchor()->set_last_Java_sp(nullptr);
 
   // Unpack the interpreter frames and any adapter frame (c2 only) we might create.
   array->unpack_to_stack(stub_frame, exec_mode, info->caller_actual_parameters());
 
-  thread->frame_anchor()->set_last_Java_sp(sp);
+  current->frame_anchor()->set_last_Java_sp(sp);
 
   BasicType bt = info->return_type();
 
@@ -888,20 +888,20 @@ JRT_LEAF_PROF(BasicType, Deoptimization, unpack_frames, Deoptimization::unpack_f
     bt = T_OBJECT;
 
   // Cleanup thread deopt data
-  cleanup_deopt_info(thread, array);
+  cleanup_deopt_info(current, array);
 
 #ifndef PRODUCT
   if (VerifyStack) {
     ResourceMark res_mark;
     // Clear pending exception to not break verification code (restored afterwards)
-    PreserveExceptionMark pm(thread);
+    PreserveExceptionMark pm(current);
 
-    thread->validate_frame_layout();
+    current->validate_frame_layout();
 
     // Verify that the just-unpacked frames match the interpreter's
     // notions of expression stack and locals
-    vframeArray* cur_array = thread->vframe_array_last();
-    RegisterMap rm(thread,
+    vframeArray* cur_array = current->vframe_array_last();
+    RegisterMap rm(current,
                    RegisterMap::UpdateMap::skip,
                    RegisterMap::ProcessFrames::include,
                    RegisterMap::WalkContinuation::skip);
@@ -920,7 +920,7 @@ JRT_LEAF_PROF(BasicType, Deoptimization, unpack_frames, Deoptimization::unpack_f
       bool try_next_mask = false;
       int next_mask_expression_stack_size = -1;
       int top_frame_expression_stack_adjustment = 0;
-      methodHandle mh(thread, iframe->interpreter_frame_method());
+      methodHandle mh(current, iframe->interpreter_frame_method());
       OopMapCache::compute_one_oop_map(mh, iframe->interpreter_frame_bci(), &mask);
       BytecodeStream str(mh, iframe->interpreter_frame_bci());
       int max_bci = mh->code_size();
@@ -1001,7 +1001,7 @@ JRT_LEAF_PROF(BasicType, Deoptimization, unpack_frames, Deoptimization::unpack_f
           tty->print_cr("  top_frame_expression_stack_adjustment = %d", top_frame_expression_stack_adjustment);
           tty->print_cr("  exec_mode = %d", exec_mode);
           tty->print_cr("  cur_invoke_parameter_size = %d", cur_invoke_parameter_size);
-          tty->print_cr("  Thread = " INTPTR_FORMAT ", thread ID = %d", p2i(thread), thread->osthread()->thread_id());
+          tty->print_cr("  Thread = " INTPTR_FORMAT ", thread ID = %d", p2i(current), current->osthread()->thread_id());
           tty->print_cr("  Interpreted frames:");
           for (int k = 0; k < cur_array->frames(); k++) {
             vframeArrayElement* el = cur_array->element(k);
@@ -2551,7 +2551,10 @@ PROF_ENTRY(Deoptimization::UnrollBlock*, Deoptimization, uncommon_trap, Deoptimi
   MACOS_AARCH64_ONLY(ThreadWXEnable wx(WXWrite, current));
 
   // Still in Java no safepoints
-  {
+  { // FIXME: remove
+//    PauseTimer pt(THREAD->current_rt_call_timer());
+//    PauseRuntimeCallProfiling prcp(current);
+
     // This enters VM and may safepoint
     uncommon_trap_inner(current, trap_request);
   }
@@ -2914,25 +2917,44 @@ const char* Deoptimization::format_trap_state(char* buf, size_t buflen,
   NEWPERFTICKCOUNTER (_perf_##sub##_##name##_timer, SUN_RT, #sub "::" #name "_time"); \
   NEWPERFEVENTCOUNTER(_perf_##sub##_##name##_count, SUN_RT, #sub "::" #name "_count");
 
-void perf_deoptimize_init() {
-  EXCEPTION_MARK;
+void Deoptimization::init_counters() {
   if (UsePerfData) {
+    EXCEPTION_MARK;
+
     DO_COUNTERS(INIT_COUNTER)
-  }
-  if (HAS_PENDING_EXCEPTION) {
-    vm_exit_during_initialization("jvm_perf_init failed unexpectedly");
+
+    if (HAS_PENDING_EXCEPTION) {
+      vm_exit_during_initialization("Deoptimization::init_counters() failed unexpectedly");
+    }
   }
 }
+
 #undef INIT_COUNTER
 
-#define PRINT_COUNTER(sub, name) { \
-  jlong count = _perf_##sub##_##name##_count->get_value(); \
-  if (count > 0) { \
-    st->print_cr("  %-50s = %4ldms (%5ld events)", #sub "::" #name, \
-                 Management::ticks_to_ms(_perf_##sub##_##name##_timer->get_value()), count); \
-  }}
+#define RESET_COUNTER(sub, name) \
+  if (_perf_##sub##_##name##_timer != nullptr) { \
+    _perf_##sub##_##name##_timer->reset(); \
+    _perf_##sub##_##name##_count->reset(); \
+  }
 
-void perf_deoptimization_print_on(outputStream* st) {
+void Deoptimization::reset_counters() {
+  if (ProfileRuntimeCalls && UsePerfData) {
+    log_debug(init)("Reset Deoptimization counters");
+    DO_COUNTERS(RESET_COUNTER)
+  }
+}
+
+#undef RESET_COUNTER
+
+#define PRINT_COUNTER(sub, name) { \
+  if (_perf_##sub##_##name##_count != nullptr) { \
+    jlong count = _perf_##sub##_##name##_count->get_value(); \
+    if (count > 0) { \
+      st->print_cr("  %-50s = %4ldms (%5ld events)", #sub "::" #name, \
+                   Management::ticks_to_ms(_perf_##sub##_##name##_timer->get_value()), count); \
+    }}}
+
+void Deoptimization::print_counters_on(outputStream* st) {
   if (ProfileRuntimeCalls && UsePerfData) {
     DO_COUNTERS(PRINT_COUNTER)
   } else {

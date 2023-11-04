@@ -1922,25 +1922,47 @@ void OptoRuntime::init_counters() {
     DO_COUNTERS2(INIT_COUNTER_TIME_AND_CNT, INIT_COUNTER_CNT)
 
     if (HAS_PENDING_EXCEPTION) {
-      vm_exit_during_initialization("jvm_perf_init failed unexpectedly");
+      vm_exit_during_initialization("OptoRuntime::init_counters() failed unexpectedly");
     }
   }
 }
 #undef INIT_COUNTER_TIME_AND_CNT
 #undef INIT_COUNTER_CNT
 
+#define RESET_COUNTER_CNT(sub, name) \
+  if (_perf_##sub##_##name##_count != nullptr) { \
+    _perf_##sub##_##name##_count->reset(); \
+  }
+
+#define RESET_COUNTER_TIME_AND_CNT(sub, name) \
+  if (_perf_##sub##_##name##_timer != nullptr) { \
+    _perf_##sub##_##name##_timer->reset();    \
+  } \
+  RESET_COUNTER_CNT(sub, name)
+
+void OptoRuntime::reset_counters() {
+  if (ProfileRuntimeCalls && UsePerfData) {
+    log_debug(init)("Reset OptoRuntime counters");
+    DO_COUNTERS2(RESET_COUNTER_TIME_AND_CNT, RESET_COUNTER_CNT)
+  }
+}
+
+#undef RESET_COUNTER
+
 #define PRINT_COUNTER_TIME_AND_CNT(sub, name) { \
-  jlong count = _perf_##sub##_##name##_count->get_value(); \
-  if (count > 0) { \
-    st->print_cr("  %-30s = %4ldms (%5ld events)", #sub "::" #name, \
-                 Management::ticks_to_ms(_perf_##sub##_##name##_timer->get_value()), count); \
-  }}
+  if (_perf_##sub##_##name##_count != nullptr) { \
+    jlong count = _perf_##sub##_##name##_count->get_value(); \
+    if (count > 0) { \
+      st->print_cr("  %-30s = %4ldms (%5ld events)", #sub "::" #name, \
+                   Management::ticks_to_ms(_perf_##sub##_##name##_timer->get_value()), count); \
+    }}}
 
 #define PRINT_COUNTER_CNT(sub, name) { \
-  jlong count = _perf_##sub##_##name##_count->get_value(); \
-  if (count > 0) { \
-    st->print_cr("  %-30s = %5ld events", #name, count); \
-  }}
+  if (_perf_##sub##_##name##_count != nullptr) { \
+    jlong count = _perf_##sub##_##name##_count->get_value(); \
+    if (count > 0) { \
+      st->print_cr("  %-30s = %5ld events", #name, count); \
+    }}}
 
 void OptoRuntime::print_counters_on(outputStream* st) {
   if (UsePerfData && ProfileRuntimeCalls) {

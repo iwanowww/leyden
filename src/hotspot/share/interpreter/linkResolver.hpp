@@ -249,7 +249,8 @@ class LinkResolver: AllStatic {
                                                  Klass* resolved_klass,
                                                  Handle recv,
                                                  Klass* recv_klass,
-                                                 bool check_null_and_abstract, TRAPS);
+                                                 bool check_null_and_abstract,
+                                                 bool need_selected_method, TRAPS);
 
   static bool resolve_previously_linked_invokehandle(CallInfo& result,
                                                      const LinkInfo& link_info,
@@ -294,7 +295,8 @@ class LinkResolver: AllStatic {
                                    const constantPoolHandle& pool,
                                    int index,
                                    const methodHandle& method,
-                                   Bytecodes::Code byte, TRAPS);
+                                   Bytecodes::Code byte,
+                                   bool initialize_class, TRAPS);
   static void resolve_field(fieldDescriptor& result, const LinkInfo& link_info,
                             Bytecodes::Code access_kind,
                             bool initialize_class, TRAPS);
@@ -309,7 +311,6 @@ class LinkResolver: AllStatic {
   static void resolve_virtual_call  (CallInfo& result, Handle recv, Klass* recv_klass,
                                      const LinkInfo& link_info,
                                      bool check_null_and_abstract, TRAPS);
-  static void cds_resolve_virtual_call(CallInfo& result, const LinkInfo& link_info, TRAPS);
   static void resolve_interface_call(CallInfo& result, Handle recv, Klass* recv_klass,
                                      const LinkInfo& link_info,
                                      bool check_null_and_abstract, TRAPS);
@@ -317,6 +318,9 @@ class LinkResolver: AllStatic {
                                      const LinkInfo& link_info, TRAPS);
   static void resolve_dynamic_call  (CallInfo& result,
                                      BootstrapInfo& bootstrap_specifier, TRAPS);
+
+  static void cds_resolve_virtual_call(CallInfo& result, const LinkInfo& link_info, TRAPS);
+  static void cds_resolve_interface_call(CallInfo& result, const LinkInfo& link_info, TRAPS);
 
   // same as above for compile-time resolution; but returns null handle instead of throwing
   // an exception on error also, does not initialize klass (i.e., no side effects)

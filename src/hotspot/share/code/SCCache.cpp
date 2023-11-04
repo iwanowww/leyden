@@ -194,6 +194,13 @@ void SCCache::preload_code(JavaThread* thread) {
     return;
   }
   _cache->preload_startup_code(thread);
+
+  {
+    MonitorLocker ml(thread, MethodCompileQueue_lock);
+    while (!CompileBroker::is_preload_queue_empty()) {
+      ml.wait(10);
+    }
+  }
 }
 
 SCCEntry* SCCache::find_code_entry(const methodHandle& method, uint comp_level) {

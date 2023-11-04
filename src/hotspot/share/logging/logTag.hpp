@@ -158,6 +158,7 @@ class outputStream;
   LOG_TAG(preempt) \
   LOG_TAG(preload) \
   LOG_TAG(preorder)  /* Trace all classes loaded in order referenced (not loaded) */ \
+  LOG_TAG(preresolve) \
   LOG_TAG(preview)   /* Trace loading of preview feature types */ \
   LOG_TAG(profiling) \
   LOG_TAG(promotion) \

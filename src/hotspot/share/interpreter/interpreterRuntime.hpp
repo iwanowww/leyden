@@ -94,7 +94,7 @@ class InterpreterRuntime: AllStatic {
 
   // Used by ClassListParser.
   static void resolve_get_put(Bytecodes::Code bytecode, int field_index,
-                              methodHandle& m, constantPoolHandle& pool, TRAPS);
+                              methodHandle& m, constantPoolHandle& pool, bool initialize_class, TRAPS);
   static void cds_resolve_invoke(Bytecodes::Code bytecode, int raw_index,
                                  methodHandle& m,
                                  constantPoolHandle& pool,
@@ -107,7 +107,19 @@ class InterpreterRuntime: AllStatic {
   // Statics & fields
   static void resolve_get_put(JavaThread* current, Bytecodes::Code bytecode);
 
+  static void resolve_getfield(JavaThread* current);
+  static void resolve_putfield(JavaThread* current);
+  static void resolve_getfield_nofast(JavaThread* current);
+  static void resolve_putfield_nofast(JavaThread* current);
+  static void resolve_getstatic(JavaThread* current);
+  static void resolve_putstatic(JavaThread* current);
+
   // Calls
+  static void resolve_invokevirtual(JavaThread* current);
+  static void resolve_invokespecial(JavaThread* current);
+  static void resolve_invokestatic(JavaThread* current);
+  static void resolve_invokeinterface(JavaThread* current);
+
   static void resolve_invoke(JavaThread* current, Bytecodes::Code bytecode);
   static void resolve_invokehandle (JavaThread* current);
   static void resolve_invokedynamic(JavaThread* current);
@@ -149,6 +161,8 @@ class InterpreterRuntime: AllStatic {
                                         Method* method,
                                         intptr_t* from, intptr_t* to);
 
+  static void prepare_native_call_helper(Method* method, TRAPS);
+
 #if defined(IA32) || defined(AMD64) || defined(ARM)
   // Popframe support (only needed on x86, AMD64 and ARM)
   static void popframe_move_outgoing_args(JavaThread* current, void* src_address, void* dest_address);
@@ -175,6 +189,7 @@ class InterpreterRuntime: AllStatic {
   static MethodCounters* build_method_counters(JavaThread* current, Method* m);
 
   static void init_counters();
+  static void reset_counters();
   static void print_counters_on(outputStream* st);
 };
 

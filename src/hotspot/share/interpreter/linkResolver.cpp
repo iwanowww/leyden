@@ -956,15 +956,16 @@ void LinkResolver::check_field_accessability(Klass* ref_klass,
   }
 }
 
-void LinkResolver::resolve_field_access(fieldDescriptor& fd, const constantPoolHandle& pool, int index, const methodHandle& method, Bytecodes::Code byte, TRAPS) {
+void LinkResolver::resolve_field_access(fieldDescriptor& fd, const constantPoolHandle& pool, int index,
+                                        const methodHandle& method, Bytecodes::Code byte, bool initialize_class, TRAPS) {
   LinkInfo link_info(pool, index, method, byte, CHECK);
-  resolve_field(fd, link_info, byte, true, CHECK);
+  resolve_field(fd, link_info, byte, initialize_class, CHECK);
 }
 
 void LinkResolver::resolve_field(fieldDescriptor& fd,
                                  const LinkInfo& link_info,
-                                 Bytecodes::Code byte, bool initialize_class,
-                                 TRAPS) {
+                                 Bytecodes::Code byte,
+                                 bool initialize_class, TRAPS) {
   assert(byte == Bytecodes::_getstatic || byte == Bytecodes::_putstatic ||
          byte == Bytecodes::_getfield  || byte == Bytecodes::_putfield  ||
          byte == Bytecodes::_nofast_getfield  || byte == Bytecodes::_nofast_putfield  ||
@@ -1323,6 +1324,9 @@ void LinkResolver::resolve_virtual_call(CallInfo& result, Handle recv, Klass* re
 
 void LinkResolver::cds_resolve_virtual_call(CallInfo& result, const LinkInfo& link_info, TRAPS) {
   Method* resolved_method = linktime_resolve_virtual_method(link_info, CHECK);
+  if (UseNewCode && !resolved_method->method_holder()->is_linked()) {
+    resolved_method->method_holder()->link_class(CHECK);
+  }
   runtime_resolve_virtual_method(result, methodHandle(THREAD, resolved_method),
                                  link_info.resolved_klass(),
                                  Handle(), nullptr,
@@ -1459,8 +1463,21 @@ void LinkResolver::resolve_interface_call(CallInfo& result, Handle recv, Klass* 
   Method* resolved_method = linktime_resolve_interface_method(link_info, CHECK);
   methodHandle mh(THREAD, resolved_method);
   runtime_resolve_interface_method(result, mh, link_info.resolved_klass(),
-                                   recv, recv_klass, check_null_and_abstract, CHECK);
+                                   recv, recv_klass, check_null_and_abstract, /*need_selected_method=*/true, CHECK);
 }
+
+void LinkResolver::cds_resolve_interface_call(CallInfo& result, const LinkInfo& link_info, TRAPS) {
+  // throws linktime exceptions
+  Method* resolved_method = linktime_resolve_interface_method(link_info, CHECK);
+  if (UseNewCode && !resolved_method->method_holder()->is_linked()) {
+    resolved_method->method_holder()->link_class(CHECK);
+  }
+  runtime_resolve_interface_method(result, methodHandle(THREAD, resolved_method), link_info.resolved_klass(),
+                                   Handle(), nullptr,
+                                   /*check_null_and_abstract*/false,
+                                   /*need_selected_method*/false, CHECK);
+}
+
 
 Method* LinkResolver::linktime_resolve_interface_method(const LinkInfo& link_info,
                                                              TRAPS) {
@@ -1478,7 +1495,8 @@ void LinkResolver::runtime_resolve_interface_method(CallInfo& result,
                                                     Klass* resolved_klass,
                                                     Handle recv,
                                                     Klass* recv_klass,
-                                                    bool check_null_and_abstract, TRAPS) {
+                                                    bool check_null_and_abstract,
+                                                    bool need_selected_method, TRAPS) {
 
   // check if receiver exists
   if (check_null_and_abstract && recv.is_null()) {
@@ -1486,7 +1504,7 @@ void LinkResolver::runtime_resolve_interface_method(CallInfo& result,
   }
 
   // check if receiver klass implements the resolved interface
-  if (!recv_klass->is_subtype_of(resolved_klass)) {
+  if (need_selected_method && !recv_klass->is_subtype_of(resolved_klass)) {
     ResourceMark rm(THREAD);
     char buf[200];
     jio_snprintf(buf, sizeof(buf), "Class %s does not implement the requested interface %s",
@@ -1495,10 +1513,14 @@ void LinkResolver::runtime_resolve_interface_method(CallInfo& result,
     THROW_MSG(vmSymbols::java_lang_IncompatibleClassChangeError(), buf);
   }
 
-  methodHandle selected_method = resolved_method;
+  methodHandle selected_method;
+
+  if (need_selected_method) {
+    selected_method = resolved_method;
+  }
 
   // resolve the method in the receiver class, unless it is private
-  if (!resolved_method()->is_private()) {
+  if (need_selected_method && !resolved_method()->is_private()) {
     // do lookup based on receiver klass
     // This search must match the linktime preparation search for itable initialization
     // to correctly enforce loader constraints for interface method inheritance.
@@ -1544,7 +1566,7 @@ void LinkResolver::runtime_resolve_interface_method(CallInfo& result,
   if (resolved_method->has_vtable_index()) {
     int vtable_index = resolved_method->vtable_index();
     log_develop_trace(itables)("  -- vtable index: %d", vtable_index);
-    assert(vtable_index == selected_method->vtable_index(), "sanity check");
+    assert(!need_selected_method || vtable_index == selected_method->vtable_index(), "sanity check");
     result.set_virtual(resolved_klass, resolved_method, selected_method, vtable_index, CHECK);
   } else if (resolved_method->has_itable_index()) {
     int itable_index = resolved_method()->itable_index();
@@ -1561,7 +1583,9 @@ void LinkResolver::runtime_resolve_interface_method(CallInfo& result,
     // This sets up the nonvirtual form of "virtual" call (as needed for final and private methods)
     result.set_virtual(resolved_klass, resolved_method, resolved_method, index, CHECK);
   }
-  JFR_ONLY(Jfr::on_resolution(result, CHECK);)
+  if (need_selected_method) {
+    JFR_ONLY(Jfr::on_resolution(result, CHECK);)
+  }
 }
 
 

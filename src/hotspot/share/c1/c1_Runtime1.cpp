@@ -1441,13 +1441,13 @@ int Runtime1::access_field_patching(JavaThread* current) {
 }
 
 
-JRT_LEAF_PROF(void, Runtime1, trace_block_entry, Runtime1::trace_block_entry(jint block_id))
+JRT_LEAF_PROF1(void, Runtime1, trace_block_entry, Runtime1::trace_block_entry(jint block_id))
   // for now we just print out the block id
   tty->print("%d ", block_id);
 JRT_END
 
 
-JRT_LEAF_PROF(int, Runtime1, is_instance_of, Runtime1::is_instance_of(oopDesc* mirror, oopDesc* obj))
+JRT_LEAF_PROF1(int, Runtime1, is_instance_of, Runtime1::is_instance_of(oopDesc* mirror, oopDesc* obj))
   // had to return int instead of bool, otherwise there may be a mismatch
   // between the C calling convention and the Java one.
   // e.g., on x86, GCC may clear only %al when returning a bool false, but
@@ -1544,18 +1544,34 @@ void Runtime1::init_counters() {
     DO_COUNTERS(INIT_COUNTER)
 
     if (HAS_PENDING_EXCEPTION) {
-      vm_exit_during_initialization("jvm_perf_init failed unexpectedly");
+      vm_exit_during_initialization("Runtime1::init_counters() failed unexpectedly");
     }
   }
 }
 #undef INIT_COUNTER
 
+#define RESET_COUNTER(sub, name) \
+    if (_perf_##sub##_##name##_timer != nullptr) { \
+      _perf_##sub##_##name##_timer->reset(); \
+      _perf_##sub##_##name##_count->reset(); \
+    }
+
+void Runtime1::reset_counters() {
+  if (ProfileRuntimeCalls && UsePerfData) {
+    log_debug(init)("Reset Runtime1 counters");
+    DO_COUNTERS(RESET_COUNTER)
+  }
+}
+
+#undef RESET_COUNTER
+
 #define PRINT_COUNTER(sub, name) { \
-  jlong count = _perf_##sub##_##name##_count->get_value(); \
-  if (count > 0) { \
-    st->print_cr("  %-30s = %4ldms (%5ld events)", #sub "::" #name, \
-                 Management::ticks_to_ms(_perf_##sub##_##name##_timer->get_value()), count); \
-  }}
+  if (_perf_##sub##_##name##_count != nullptr) {  \
+    jlong count = _perf_##sub##_##name##_count->get_value(); \
+    if (count > 0) { \
+      st->print_cr("  %-30s = %4ldms (%5ld events)", #sub "::" #name, \
+                   Management::ticks_to_ms(_perf_##sub##_##name##_timer->get_value()), count); \
+    }}}
 
 void Runtime1::print_counters_on(outputStream* st) {
   if (UsePerfData && ProfileRuntimeCalls) {

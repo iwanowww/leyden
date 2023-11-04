@@ -152,6 +152,9 @@ int ClassListParser::parse(TRAPS) {
       CLEAR_PENDING_EXCEPTION;
       log_warning(cds)("Preload Warning: Cannot find %s", _class_name);
       continue;
+    } else if (klass == nullptr) {
+      log_warning(cds)("Preload Warning: Cannot find %s", _class_name);
+      continue;
     }
 
     assert(klass != nullptr, "sanity");
@@ -688,10 +691,12 @@ Klass* ClassListParser::load_current_class(Symbol* class_name_symbol, TRAPS) {
     oop obj = result.get_oop();
     assert(obj != nullptr, "jdk.internal.loader.BuiltinClassLoader::loadClass never returns null");
     klass = java_lang_Class::as_Klass(obj);
-  } else {
+  } else if (!UseNewCode) { // FIXME
     // If "source:" tag is specified, all super class and super interfaces must be specified in the
     // class list file.
     klass = load_class_from_source(class_name_symbol, CHECK_NULL);
+  } else {
+    return nullptr; // FIXME
   }
 
   assert(klass != nullptr, "exception should have been thrown");
@@ -700,7 +705,9 @@ Klass* ClassListParser::load_current_class(Symbol* class_name_symbol, TRAPS) {
   if (is_id_specified()) {
     InstanceKlass* ik = InstanceKlass::cast(klass);
     int id = this->id();
-    SystemDictionaryShared::update_shared_entry(ik, id);
+    if (!UseNewCode) {
+      SystemDictionaryShared::update_shared_entry(ik, id);
+    }
     bool created;
     id2klass_table()->put_if_absent(id, ik, &created);
     if (!created) {
@@ -815,7 +822,7 @@ void ClassListParser::parse_constant_pool_tag() {
 
   ResourceMark rm(THREAD);
   constantPoolHandle cp(THREAD, ik->constants());
-  GrowableArray<bool> preresolve_list(cp->length(), cp->length(), false);
+  GrowableArray<bool> preresolve_list(cp->length(), cp->length(), UseNewCode2);
   bool preresolve_class = false;
   bool preresolve_fmi = false;
   bool preresolve_indy = false;

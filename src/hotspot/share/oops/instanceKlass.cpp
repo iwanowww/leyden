@@ -42,9 +42,11 @@
 #include "classfile/vmSymbols.hpp"
 #include "code/codeCache.hpp"
 #include "code/dependencyContext.hpp"
+#include "code/SCCache.hpp"
 #include "compiler/compilationPolicy.hpp"
 #include "compiler/compileBroker.hpp"
 #include "gc/shared/collectedHeap.inline.hpp"
+#include "interpreter/bytecodeHistogram.hpp"
 #include "interpreter/bytecodeStream.hpp"
 #include "interpreter/oopMapCache.hpp"
 #include "interpreter/rewriter.hpp"
@@ -780,27 +782,34 @@ static bool are_super_types_initialized(InstanceKlass* ik) {
   return true;
 }
 
-static int log_class_init(JavaThread* current, InstanceKlass* ik) {
-  LogTarget(Info, class, init) lt;
-  if (lt.is_enabled()) {
-    ResourceMark rm;
-    LogStream ls(lt);
-
-    static int call_class_initializer_counter = 0;   // for debugging
-    int init_id = Atomic::fetch_then_add(&call_class_initializer_counter, 1);
-
-    const char* info = "";
-    if (ik->has_preinitialized_mirror() && CDSConfig::is_loading_heap()) {
-      info = " (preinitialized)";
-    } else if (ik->class_initializer() == nullptr) {
-      info = " (no method)";
-    }
-    ls.print("%d Initializing ", init_id);
-    ik->name()->print_value_on(&ls);
-    ls.print_cr("%s (" PTR_FORMAT ") by thread \"%s\"", info, p2i(ik), current->name());
-    return init_id;
+static void log_class_init_start(outputStream* st, JavaThread* current, InstanceKlass* ik, int init_id) {
+  ResourceMark rm;
+  const char* info = "";
+  if (ik->has_preinitialized_mirror() && CDSConfig::is_loading_heap()) {
+    info = " (preinitialized)";
+  } else if (ik->class_initializer() == nullptr) {
+    info = " (no method)";
   }
-  return -1;
+  st->print("%d Initializing ", init_id);
+  ik->name()->print_value_on(st);
+  st->print_cr("%s (" PTR_FORMAT ") by thread " PTR_FORMAT " \"%s\"", info, p2i(ik), p2i(current), current->name());
+}
+
+static int log_class_init(JavaThread* current, InstanceKlass* ik) {
+  int init_id = -1;
+  if (log_is_enabled(Info, init) || log_is_enabled(Info, class, init)) {
+    static int call_class_initializer_counter = 0;   // for debugging
+    init_id = Atomic::fetch_then_add(&call_class_initializer_counter, 1);
+  }
+  LogStreamHandle(Info, class, init) lsh1;
+  if (lsh1.is_enabled()) {
+    log_class_init_start(&lsh1, current, ik, init_id);
+  }
+  LogStreamHandle(Debug, init) lsh2;
+  if (lsh2.is_enabled() && ik->class_initializer() != nullptr && !ik->has_preinitialized_mirror()) {
+    log_class_init_start(&lsh2, current, ik, init_id);
+  }
+  return init_id;
 }
 
 void InstanceKlass::initialize_from_cds(TRAPS) {
@@ -1750,15 +1759,56 @@ void InstanceKlass::call_class_initializer(TRAPS) {
         CLEAR_PENDING_EXCEPTION;  // could not allocate training data
       }
     }
-    InstanceKlass* outer = NULL;
+    InstanceKlass* outer = THREAD->set_class_being_initialized(this);
     if (tdata != nullptr) {
-      outer = THREAD->set_class_being_initialized(this);
       tdata->record_initialization_start();
     }
-    JavaCalls::call(&result, h_method, &args, THREAD); // Static call (no args)
+
+//    bool reset_counters = false;
+//    if (UseNewCode) {
+//      ResourceMark rm;
+//      if (strcmp(name()->as_C_string(), "org/hibernate/grammars/hql/HqlParser") == 0) {
+//        reset_counters = true;
+//      }
+//    }
+//    if (reset_counters) {
+//      reset_vm_init_stats();
+//      log_vm_init_stats();
+//      UseNewCode2 = true;
+//    }
+
+    elapsedTimer t;
+    jlong bc_start = BytecodeCounter::counter_value();
+    {
+      PauseTimer pt(THREAD->current_rt_call_timer(), THREAD->profile_rt_calls());
+      PauseRuntimeCallProfiling prcp(THREAD, THREAD->profile_rt_calls());
+
+      t.start();
+      JavaCalls::call(&result, h_method, &args, THREAD); // Static call (no args)
+      t.stop();
+    }
     if (tdata != nullptr) {
       tdata->record_initialization_end();
-      THREAD->set_class_being_initialized(outer);
+    }
+    jlong bc_executed = BytecodeCounter::counter_value() - bc_start;
+    THREAD->set_class_being_initialized(outer);
+    if (outer == nullptr) { // outermost clinit
+      ClassLoader::perf_class_init_bytecodes_count()->inc(bc_executed);
+    }
+
+//    if (reset_counters) {
+//      log_vm_init_stats();
+//      UseNewCode2 = false;
+//    }
+
+    LogStreamHandle(Debug, init) log;
+    if (log.is_enabled()) {
+      ResourceMark rm(THREAD);
+      log.print("%d Initialized in %.3fms (total: %ldms); executed: %ld bytecodes; ",
+                init_id, t.seconds() * 1000.0, ClassLoader::class_init_time_ms(), bc_executed);
+      name()->print_value_on(&log);
+      log.print_cr(" by thread " PTR_FORMAT " \"%s\" (" PTR_FORMAT ")",
+                   p2i(THREAD), THREAD->name(), p2i(this));
     }
   }
   LogTarget(Info, class, init) lt;
@@ -2736,7 +2786,7 @@ void InstanceKlass::metaspace_pointers_do(MetaspaceClosure* it) {
   // be writable. The length check on the _methods is necessary because classes which
   // don't have any methods share the Universe::_the_empty_method_array which is in the RO region.
   if (_methods != nullptr && _methods->length() > 0 &&
-      !can_be_verified_at_dumptime() && methods_contain_jsr_bytecode()) {
+      (!can_be_verified_at_dumptime() && methods_contain_jsr_bytecode())) {
     // To handle jsr bytecode, new Method* maybe stored into _methods
     it->push(&_methods, MetaspaceClosure::_writable);
   } else {

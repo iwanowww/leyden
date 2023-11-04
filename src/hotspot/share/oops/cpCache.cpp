@@ -255,7 +255,7 @@ void ConstantPoolCacheEntry::set_direct_or_vtable_call(Bytecodes::Code invoke_co
     }
     if (invoke_code == Bytecodes::_invokestatic) {
       assert(method->method_holder()->is_initialized() ||
-             method->method_holder()->is_init_thread(JavaThread::current()),
+             method->method_holder()->is_init_thread(JavaThread::current()) || UseNewCode,
              "invalid class initialization state for invoke_static");
 
       if (!VM_Version::supports_fast_class_init_checks() && method->needs_clinit_barrier()) {
@@ -290,6 +290,7 @@ void ConstantPoolCacheEntry::set_direct_or_vtable_call(Bytecodes::Code invoke_co
       //
       // We set bytecode_2() to _invokevirtual.
       // See also interpreterRuntime.cpp. (8/25/2000)
+      set_bytecode_1(invoke_code);
     } else {
       assert(invoke_code == Bytecodes::_invokevirtual ||
              (invoke_code == Bytecodes::_invokeinterface &&

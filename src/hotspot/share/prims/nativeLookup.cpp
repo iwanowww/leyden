@@ -275,16 +275,21 @@ address NativeLookup::lookup_style(const methodHandle& method, char* pure_name, 
   Klass*   klass = vmClasses::ClassLoader_klass();
   Handle name_arg = java_lang_String::create_from_str(jni_name, CHECK_NULL);
 
-  JavaValue result(T_LONG);
-  JavaCalls::call_static(&result,
-                         klass,
-                         vmSymbols::findNative_name(),
-                         vmSymbols::classloader_string_long_signature(),
-                         // Arguments
-                         loader,
-                         name_arg,
-                         CHECK_NULL);
-  entry = (address) (intptr_t) result.get_jlong();
+  { // FIXME: remove; should be attributed to the runtime call
+//    PauseTimer pt(THREAD->current_rt_call_timer());
+//    PauseRuntimeCallProfiling prcp(THREAD);
+
+    JavaValue result(T_LONG);
+    JavaCalls::call_static(&result,
+                           klass,
+                           vmSymbols::findNative_name(),
+                           vmSymbols::classloader_string_long_signature(),
+                           // Arguments
+                           loader,
+                           name_arg,
+                           CHECK_NULL);
+    entry = (address) (intptr_t) result.get_jlong();
+  }
 
   if (entry == nullptr) {
     // findNative didn't find it, if there are any agent libraries look in them

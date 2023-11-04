@@ -219,6 +219,9 @@ public:
 
     bool no_safepoint_check = flag == Mutex::_no_safepoint_check_flag;
     if (_mutex != nullptr) {
+//      if (UseNewCode2 && _prof && mutex->id() == -1) {
+//        dump(mutex);
+//      }
       if (_prof) { _before.start(); } // before
 
       if (no_safepoint_check) {
@@ -234,6 +237,9 @@ public:
   MutexLockerImpl(Thread* thread, Mutex* mutex, Mutex::SafepointCheckFlag flag = Mutex::_safepoint_check_flag) :
     _mutex(mutex), _prof(thread->profile_vm_locks()) {
 
+//    if (UseNewCode2 && _prof && mutex->id() == -1) {
+//      dump(mutex);
+//    }
     if (_prof) { _before.start(); } // before
 
     bool no_safepoint_check = flag == Mutex::_no_safepoint_check_flag;
@@ -268,8 +274,12 @@ public:
 
  public:
   static void post_initialize();
-  static void init();
+
+  static void init_counters();
+  static void reset_counters();
   static void print_counters_on(outputStream* st);
+
+  static void dump(Mutex* mutex);
 };
 
 // Simplest mutex locker.

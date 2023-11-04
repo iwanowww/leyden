@@ -138,16 +138,33 @@ void SharedRuntime::generate_stubs() {
 #ifdef COMPILER2
   generate_uncommon_trap_blob();
 #endif // COMPILER2
+  init_counters();
+}
+
+void SharedRuntime::init_counters() {
   if (UsePerfData) {
     EXCEPTION_MARK;
+
     NEWPERFTICKCOUNTER(_perf_resolve_opt_virtual_total_time, SUN_CI, "resovle_opt_virtual_call");
     NEWPERFTICKCOUNTER(_perf_resolve_virtual_total_time,     SUN_CI, "resovle_virtual_call");
     NEWPERFTICKCOUNTER(_perf_resolve_static_total_time,      SUN_CI, "resovle_static_call");
     NEWPERFTICKCOUNTER(_perf_handle_wrong_method_total_time, SUN_CI, "handle_wrong_method");
     NEWPERFTICKCOUNTER(_perf_ic_miss_total_time ,            SUN_CI, "ic_miss");
+
     if (HAS_PENDING_EXCEPTION) {
-      vm_exit_during_initialization("SharedRuntime::generate_stubs() failed unexpectedly");
+      vm_exit_during_initialization("SharedRuntime::init_counters() failed unexpectedly");
     }
+  }
+}
+
+void SharedRuntime::reset_counters() {
+  if (UsePerfData) {
+    log_debug(init)("Reset SharedRuntime counters");
+    _perf_resolve_opt_virtual_total_time->reset();
+    _perf_resolve_virtual_total_time->reset();
+    _perf_resolve_static_total_time->reset();
+    _perf_handle_wrong_method_total_time->reset();
+    _perf_ic_miss_total_time->reset();
   }
 }
 

@@ -176,22 +176,32 @@ void SystemDictionary::compute_java_loaders(TRAPS) {
 oop SystemDictionary::get_system_class_loader_impl(TRAPS) {
   JavaValue result(T_OBJECT);
   InstanceKlass* class_loader_klass = vmClasses::ClassLoader_klass();
-  JavaCalls::call_static(&result,
-                         class_loader_klass,
-                         vmSymbols::getSystemClassLoader_name(),
-                         vmSymbols::void_classloader_signature(),
-                         CHECK_NULL);
+  {
+    PauseTimer pt(THREAD->current_rt_call_timer(), THREAD->profile_rt_calls());
+    PauseRuntimeCallProfiling prcp(THREAD, THREAD->profile_rt_calls());
+
+    JavaCalls::call_static(&result,
+                           class_loader_klass,
+                           vmSymbols::getSystemClassLoader_name(),
+                           vmSymbols::void_classloader_signature(),
+                           CHECK_NULL);
+  }
   return result.get_oop();
 }
 
 oop SystemDictionary::get_platform_class_loader_impl(TRAPS) {
   JavaValue result(T_OBJECT);
   InstanceKlass* class_loader_klass = vmClasses::ClassLoader_klass();
-  JavaCalls::call_static(&result,
-                         class_loader_klass,
-                         vmSymbols::getPlatformClassLoader_name(),
-                         vmSymbols::void_classloader_signature(),
-                         CHECK_NULL);
+  {
+    PauseTimer pt(THREAD->current_rt_call_timer(), THREAD->profile_rt_calls());
+    PauseRuntimeCallProfiling prcp(THREAD, THREAD->profile_rt_calls());
+
+    JavaCalls::call_static(&result,
+                           class_loader_klass,
+                           vmSymbols::getPlatformClassLoader_name(),
+                           vmSymbols::void_classloader_signature(),
+                           CHECK_NULL);
+  }
   return result.get_oop();
 }
 
@@ -1347,14 +1357,18 @@ InstanceKlass* SystemDictionary::load_instance_class_impl(Symbol* class_name, Ha
     // For parallelCapable class loaders, JDK >=7, loadClass(String, boolean) will
     // acquire a class-name based lock rather than the class loader object lock.
     // JDK < 7 already acquire the class loader lock in loadClass(String, boolean).
-    JavaCalls::call_virtual(&result,
-                            class_loader,
-                            spec_klass,
-                            vmSymbols::loadClass_name(),
-                            vmSymbols::string_class_signature(),
-                            string,
-                            CHECK_NULL);
+    {
+      PauseTimer pt(THREAD->current_rt_call_timer(), THREAD->profile_rt_calls());
+      PauseRuntimeCallProfiling prcp(THREAD, THREAD->profile_rt_calls());
 
+      JavaCalls::call_virtual(&result,
+                              class_loader,
+                              spec_klass,
+                              vmSymbols::loadClass_name(),
+                              vmSymbols::string_class_signature(),
+                              string,
+                              CHECK_NULL);
+    }
     assert(result.get_type() == T_OBJECT, "just checking");
     oop obj = result.get_oop();
 
@@ -1450,6 +1464,10 @@ void SystemDictionary::define_instance_class(InstanceKlass* k, Handle class_load
     JavaValue result(T_VOID);
     JavaCallArguments args(class_loader);
     args.push_oop(Handle(THREAD, k->java_mirror()));
+
+    // FIXME: remove
+//    PauseTimer pt(THREAD->current_rt_call_timer());
+//    PauseRuntimeCallProfiling prcp(THREAD);
     JavaCalls::call(&result, m, &args, CHECK);
   }
 
@@ -2168,11 +2186,16 @@ Method* SystemDictionary::find_method_handle_invoker(Klass* klass,
   args.push_oop(method_type);
   args.push_oop(appendix_box);
   JavaValue result(T_OBJECT);
-  JavaCalls::call_static(&result,
-                         vmClasses::MethodHandleNatives_klass(),
-                         vmSymbols::linkMethod_name(),
-                         vmSymbols::linkMethod_signature(),
-                         &args, CHECK_NULL);
+  {
+    PauseTimer pt(THREAD->current_rt_call_timer(), THREAD->profile_rt_calls());
+    PauseRuntimeCallProfiling prcp(THREAD, THREAD->profile_rt_calls());
+
+    JavaCalls::call_static(&result,
+                           vmClasses::MethodHandleNatives_klass(),
+                           vmSymbols::linkMethod_name(),
+                           vmSymbols::linkMethod_signature(),
+                           &args, CHECK_NULL);
+  }
   Handle mname(THREAD, result.get_oop());
   return unpack_method_and_appendix(mname, accessing_klass, appendix_box, appendix_result, THREAD);
 }
@@ -2243,7 +2266,7 @@ Handle SystemDictionary::find_method_handle_type(Symbol* signature,
                                                  Klass* accessing_klass,
                                                  TRAPS) {
   Handle empty;
-  OopHandle* o;
+  OopHandle *o;
   {
     MutexLocker ml(THREAD, InvokeMethodTypeTable_lock);
     o = _invoke_method_type_table->get(signature);
@@ -2260,7 +2283,7 @@ Handle SystemDictionary::find_method_handle_type(Symbol* signature,
 
   Handle class_loader, protection_domain;
   if (accessing_klass != nullptr) {
-    class_loader      = Handle(THREAD, accessing_klass->class_loader());
+    class_loader = Handle(THREAD, accessing_klass->class_loader());
     protection_domain = Handle(THREAD, accessing_klass->protection_domain());
   }
   bool can_be_cached = true;
@@ -2293,7 +2316,7 @@ Handle SystemDictionary::find_method_handle_type(Symbol* signature,
 
     // Check accessibility.
     if (!java_lang_Class::is_primitive(mirror) && accessing_klass != nullptr) {
-      Klass* sel_klass = java_lang_Class::as_Klass(mirror);
+      Klass *sel_klass = java_lang_Class::as_Klass(mirror);
       mirror = nullptr;  // safety
       // Emulate ConstantPool::verify_constant_pool_resolve.
       LinkResolver::check_klass_accessibility(accessing_klass, sel_klass, CHECK_(empty));
@@ -2305,11 +2328,16 @@ Handle SystemDictionary::find_method_handle_type(Symbol* signature,
   JavaCallArguments args(Handle(THREAD, rt()));
   args.push_oop(pts);
   JavaValue result(T_OBJECT);
-  JavaCalls::call_static(&result,
-                         vmClasses::MethodHandleNatives_klass(),
-                         vmSymbols::findMethodHandleType_name(),
-                         vmSymbols::findMethodHandleType_signature(),
-                         &args, CHECK_(empty));
+  {
+    PauseTimer pt(THREAD->current_rt_call_timer(), THREAD->profile_rt_calls());
+    PauseRuntimeCallProfiling prcp(THREAD, THREAD->profile_rt_calls());
+
+    JavaCalls::call_static(&result,
+                           vmClasses::MethodHandleNatives_klass(),
+                           vmSymbols::findMethodHandleType_name(),
+                           vmSymbols::findMethodHandleType_signature(),
+                           &args, CHECK_(empty));
+  }
   Handle method_type(THREAD, result.get_oop());
 
   if (can_be_cached) {
@@ -2393,11 +2421,16 @@ Handle SystemDictionary::link_method_handle_constant(Klass* caller,
   args.push_oop(name_str);
   args.push_oop(type);
   JavaValue result(T_OBJECT);
-  JavaCalls::call_static(&result,
-                         vmClasses::MethodHandleNatives_klass(),
-                         vmSymbols::linkMethodHandleConstant_name(),
-                         vmSymbols::linkMethodHandleConstant_signature(),
-                         &args, CHECK_(empty));
+  {
+    PauseTimer pt(THREAD->current_rt_call_timer(), THREAD->profile_rt_calls());
+    PauseRuntimeCallProfiling prcp(THREAD, THREAD->profile_rt_calls());
+
+    JavaCalls::call_static(&result,
+                           vmClasses::MethodHandleNatives_klass(),
+                           vmSymbols::linkMethodHandleConstant_name(),
+                           vmSymbols::linkMethodHandleConstant_signature(),
+                           &args, CHECK_(empty));
+  }
   return Handle(THREAD, result.get_oop());
 }
 
@@ -2433,12 +2466,16 @@ void SystemDictionary::invoke_bootstrap_method(BootstrapInfo& bootstrap_specifie
     args.push_oop(appendix_box);
   }
   JavaValue result(T_OBJECT);
-  JavaCalls::call_static(&result,
-                         vmClasses::MethodHandleNatives_klass(),
-                         is_indy ? vmSymbols::linkCallSite_name() : vmSymbols::linkDynamicConstant_name(),
-                         is_indy ? vmSymbols::linkCallSite_signature() : vmSymbols::linkDynamicConstant_signature(),
-                         &args, CHECK);
+  {
+    PauseTimer pt(THREAD->current_rt_call_timer(), THREAD->profile_rt_calls());
+    PauseRuntimeCallProfiling prcp(THREAD, THREAD->profile_rt_calls());
 
+    JavaCalls::call_static(&result,
+                           vmClasses::MethodHandleNatives_klass(),
+                           is_indy ? vmSymbols::linkCallSite_name() : vmSymbols::linkDynamicConstant_name(),
+                           is_indy ? vmSymbols::linkCallSite_signature() : vmSymbols::linkDynamicConstant_signature(),
+                           &args, CHECK);
+  }
   Handle value(THREAD, result.get_oop());
   if (is_indy) {
     Handle appendix;
