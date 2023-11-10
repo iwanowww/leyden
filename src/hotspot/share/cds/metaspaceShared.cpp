@@ -55,6 +55,7 @@
 #include "code/codeCache.hpp"
 #include "code/SCCache.hpp"
 #include "compiler/compileBroker.hpp"
+#include "compiler/precompiler.hpp"
 #include "gc/shared/gcVMOperations.hpp"
 #include "interpreter/bytecodeStream.hpp"
 #include "interpreter/bytecodes.hpp"
@@ -102,7 +103,7 @@ void* MetaspaceShared::_shared_metaspace_static_top = nullptr;
 intx MetaspaceShared::_relocation_delta;
 char* MetaspaceShared::_requested_base_address;
 bool MetaspaceShared::_use_optimized_module_handling = true;
-Array<Method*>* MetaspaceShared::_archived_method_handle_intrinsics = NULL;
+Array<Method*>* MetaspaceShared::_archived_method_handle_intrinsics = nullptr;
 
 // The CDS archive is divided into the following regions:
 //     rw  - read-write metadata
@@ -300,7 +301,7 @@ void MetaspaceShared::post_initialize(TRAPS) {
 
 static GrowableArrayCHeap<OopHandle, mtClassShared>* _extra_interned_strings = nullptr;
 static GrowableArrayCHeap<Symbol*, mtClassShared>* _extra_symbols = nullptr;
-static GrowableArray<Method*>* _method_handle_intrinsics = NULL;
+static GrowableArray<Method*>* _method_handle_intrinsics = nullptr;
 
 void MetaspaceShared::read_extra_data(JavaThread* current, const char* filename) {
   _extra_interned_strings = new GrowableArrayCHeap<OopHandle, mtClassShared>(10000);
@@ -460,7 +461,6 @@ void MetaspaceShared::rewrite_nofast_bytecodes_and_calculate_fingerprints(Thread
 class VM_PopulateDumpSharedSpace : public VM_Operation {
 private:
   ArchiveHeapInfo _heap_info;
-
   void dump_java_heap_objects(GrowableArray<Klass*>* klasses) NOT_CDS_JAVA_HEAP_RETURN;
   void dump_shared_symbol_table(GrowableArray<Symbol*>* symbols) {
     log_info(cds)("Dumping symbol table ...");
@@ -468,15 +468,19 @@ private:
   }
   char* dump_read_only_tables();
   StaticArchiveBuilder& _builder;
+  FileMapInfo* _mapinfo;
 public:
 
-  VM_PopulateDumpSharedSpace(StaticArchiveBuilder& b) : VM_Operation(), _heap_info(), _builder(b) {}
+  VM_PopulateDumpSharedSpace(StaticArchiveBuilder& b) :
+    VM_Operation(), _heap_info(), _builder(b), _mapinfo(nullptr) {}
 
   bool skip_operation() const { return false; }
 
   VMOp_Type type() const { return VMOp_PopulateDumpSharedSpace; }
   void doit();   // outline because gdb sucks
   bool allow_nested_vm_operations() const { return true; }
+  FileMapInfo* mapinfo() const { return _mapinfo; }
+  ArchiveHeapInfo* heap_info() { return &_heap_info; }
 }; // class VM_PopulateDumpSharedSpace
 
 class StaticArchiveBuilder : public ArchiveBuilder {
@@ -579,11 +583,6 @@ void VM_PopulateDumpSharedSpace::doit() {
   // We don't want to write these addresses into the archive.
   CppVtables::zero_archived_vtables();
 
-  // relocate the data so that it can be mapped to MetaspaceShared::requested_base_address()
-  // without runtime relocation.
-  _builder.relocate_to_requested();
-
-  // Write the archive file
   const char* static_archive;
   if (CDSConfig::is_dumping_final_static_archive()) {
     static_archive = CacheDataStore;
@@ -593,21 +592,10 @@ void VM_PopulateDumpSharedSpace::doit() {
     static_archive = Arguments::GetSharedArchivePath();
   }
   assert(static_archive != nullptr, "SharedArchiveFile not set?");
-  FileMapInfo* mapinfo = new FileMapInfo(static_archive, true);
-  mapinfo->populate_header(MetaspaceShared::core_region_alignment());
-  mapinfo->set_serialized_data(serialized_data);
-  mapinfo->set_cloned_vtables(cloned_vtables);
-  mapinfo->open_for_write();
-  _builder.write_archive(mapinfo, &_heap_info);
-
-  if (PrintSystemDictionaryAtExit) {
-    SystemDictionary::print();
-  }
-
-  if (AllowArchivingWithJavaAgent) {
-    log_warning(cds)("This archive was created with AllowArchivingWithJavaAgent. It should be used "
-            "for testing purposes only and should not be used in a production environment");
-  }
+  _mapinfo = new FileMapInfo(static_archive, true);
+  _mapinfo->populate_header(MetaspaceShared::core_region_alignment());
+  _mapinfo->set_serialized_data(serialized_data);
+  _mapinfo->set_cloned_vtables(cloned_vtables);
 }
 
 class CollectCLDClosure : public CLDClosure {
@@ -723,131 +711,6 @@ void MetaspaceShared::prepare_for_dumping() {
   ClassLoader::initialize_shared_path(JavaThread::current());
 }
 
-class PrecompileIterator : StackObj {
-private:
-  Thread* _thread;
-  GrowableArray<Method*> _methods;
-
-  static nmethod* precompile(Method* m, TRAPS) {
-    assert(m->method_holder()->is_linked(), "required");
-
-    methodHandle mh(THREAD, m);
-    assert(!HAS_PENDING_EXCEPTION, "");
-    return CompileBroker::compile_method(mh, InvocationEntryBci, CompLevel_full_optimization, methodHandle(), 0,
-                                         true /*requires_online_comp*/, CompileTask::Reason_Precompile,
-                                         THREAD);
-  }
-
-  static nmethod* precompile(Method* m, ArchiveBuilder* builder, TRAPS) {
-    nmethod* code = precompile(m, THREAD);
-    bool status = (!HAS_PENDING_EXCEPTION) && (code != nullptr);
-
-    static int count = 0;
-    static CompiledMethod* last = nullptr;
-    Method* requested_m = builder->to_requested(builder->get_buffered_addr(m));
-    ++count;
-
-    if (log_is_enabled(Info, precompile)) {
-      int isz = 0;
-      int delta = 0;
-      if (status) {
-        isz = code->insts_size();
-        if (last != nullptr) {
-          delta = (int) (address(code) - address(last));
-        }
-        last = code;
-      }
-
-      ResourceMark rm;
-      log_info(precompile)("[%4d] Compiled %s [%p -> %p] (%s) code = %p insts_size = %d delta = %d", count,
-                           m->external_name(), m, requested_m,
-                           status ? "success" : "FAILED", code, isz, delta);
-    }
-    return code;
-  }
-
-public:
-  PrecompileIterator(): _thread(Thread::current()) {
-    assert(TrainingData::have_data(), "sanity");
-  }
-
-  bool include(Method* m) {
-    if (m->is_native() || m->is_abstract()) {
-      return false;
-    }
-    DirectiveSet* directives = DirectivesStack::getMatchingDirective(methodHandle(_thread, m), nullptr);
-    if (directives->DontPrecompileOption) {
-      return false; // excluded
-    } else if (directives->PrecompileRecordedOption > 0) {
-      return true;
-    }
-    int cid = compile_id(m, CompLevel_full_optimization);
-    return (cid < INT_MAX);
-  }
-
-  void do_value(const RunTimeClassInfo* record) {
-    Array<Method*>* methods = record->_klass->methods();
-    for (int i = 0; i < methods->length(); i++) {
-      Method* m = methods->at(i);
-      if (include(m)) {
-        _methods.push(m);
-      }
-    }
-  }
-  void do_value(TrainingData* td) {
-    if (td->is_MethodTrainingData()) {
-      MethodTrainingData* mtd = td->as_MethodTrainingData();
-      if (mtd->has_holder() && include((Method*)mtd->holder())) {
-        _methods.push((Method*)mtd->holder());
-      }
-    }
-  }
-
-  static int compile_id(Method* m, int level) {
-    MethodTrainingData* mtd = TrainingData::lookup_for(m);
-    if (mtd != nullptr) {
-      CompileTrainingData* ctd = mtd->last_toplevel_compile(level);
-      if (ctd != nullptr) {
-        return ctd->compile_id();
-      }
-    }
-    return INT_MAX; // treat as the last compilation
-  }
-
-  static int compare_by_compile_id(Method** m1, Method** m2) {
-    int id1 = compile_id(*m1, CompLevel_full_optimization);
-    int id2 = compile_id(*m2, CompLevel_full_optimization);
-    return (id1 - id2);
-  }
-
-  static void sort_methods_by_compile_id(GrowableArray<Method*>* methods) {
-    methods->sort(&compare_by_compile_id);
-  }
-
-  void precompile(ArchiveBuilder* builder, TRAPS) {
-    sort_methods_by_compile_id(&_methods);
-
-    for (int i = 0; i < _methods.length(); i++) {
-      Method* m = _methods.at(i);
-
-      assert(!HAS_PENDING_EXCEPTION, "");
-      precompile(m, builder, THREAD);
-      if (HAS_PENDING_EXCEPTION) {
-        CLEAR_PENDING_EXCEPTION;
-      }
-    }
-  }
-};
-
-static void tmp_test_aot(ArchiveBuilder* builder, TRAPS) {
-  if (TrainingData::have_data()) {
-    ResourceMark rm;
-    PrecompileIterator pi;
-    TrainingData::archived_training_data_dictionary()->iterate(&pi);
-    pi.precompile(builder, THREAD);
-  }
-}
-
 // Preload classes from a list, populate the shared spaces and dump to a
 // file.
 void MetaspaceShared::preload_and_dump() {
@@ -872,25 +735,6 @@ void MetaspaceShared::preload_and_dump() {
                      java_lang_String::as_utf8_string(java_lang_Throwable::message(PENDING_EXCEPTION)));
       MetaspaceShared::unrecoverable_writing_error("VM exits due to exception, use -Xlog:cds,exceptions=trace for detail");
     }
-  }
-
-  if (log_is_enabled(Info, cds, jit)) {
-    CDSAccess::test_heap_access_api();
-  }
-
-  if (CDSConfig::is_dumping_final_static_archive() && StoreCachedCode && CachedCodeFile != nullptr) {
-    // We have just created the final image. Let's run the AOT compiler
-    CDSConfig::enable_dumping_cached_code();
-    if (PrintTrainingInfo) {
-      tty->print_cr("==================== archived_training_data ** after dumping ====================");
-      TrainingData::print_archived_training_data_on(tty);
-    }
-    int count = MAX2(1, (int)(NewCodeParameter & 0x7fffffff));
-    for (int i = 0; i < count; i++) {
-      tmp_test_aot(&builder, CHECK);
-    }
-    CDSConfig::disable_dumping_cached_code();
-    SCCache::close(); // Write final data and close archive
   }
 }
 
@@ -1042,51 +886,100 @@ void MetaspaceShared::preload_and_dump_impl(StaticArchiveBuilder& builder, TRAPS
 
   VM_PopulateDumpSharedSpace op(builder);
   VMThread::execute(&op);
-
-  if (CDSConfig::is_dumping_final_static_archive()) {
-    RecordTraining = false;
-  }
+  FileMapInfo* mapinfo = op.mapinfo();
+  ArchiveHeapInfo* heap_info = op.heap_info();
 
   if (CDSConfig::is_dumping_preimage_static_archive()) {
-    ResourceMark rm;
-    stringStream st;
-    st.print("%s%sbin%sjava", Arguments::get_java_home(), os::file_separator(), os::file_separator());
-    const char* cp = Arguments::get_appclasspath();
-    if (cp != nullptr && strlen(cp) > 0 && strcmp(cp, ".") != 0) {
-      st.print(" -cp ");  st.print_raw(cp);
-    }
-    for (int i = 0; i < Arguments::num_jvm_flags(); i++) {
-      st.print(" %s", Arguments::jvm_flags_array()[i]);
-    }
-    for (int i = 0; i < Arguments::num_jvm_args(); i++) {
-      st.print(" %s", Arguments::jvm_args_array()[i]);
-    }
-    st.print(" -XX:CDSPreimage=%s", SharedArchiveFile);
+    write_static_archive(&builder, mapinfo, heap_info);
+    fork_and_dump_final_static_archive();
+  } else if (CDSConfig::is_dumping_final_static_archive()) {
+    RecordTraining = false;
+    if (StoreCachedCode && CachedCodeFile != nullptr) { // FIXME: new workflow -- remove the CachedCodeFile flag
+      if (log_is_enabled(Info, cds, jit)) {
+        CDSAccess::test_heap_access_api();
+      }
 
-    const char* cmd = st.freeze();
-    if (CDSManualFinalImage) {
-      tty->print_cr("-XX:+CDSManualFinalImage is specified");
-      tty->print_cr("Please manually execute the following command to create the final CDS image:");
-      tty->print("    "); tty->print_raw_cr(cmd);
+      // We have just created the final image. Let's run the AOT compiler
+      if (PrintTrainingInfo) {
+        tty->print_cr("==================== archived_training_data ** after dumping ====================");
+        TrainingData::print_archived_training_data_on(tty);
+      }
+
+      CDSConfig::enable_dumping_cached_code();
+      {
+        builder.start_cc_region();
+        Precompiler::compile_cached_code(&builder, CHECK);
+        builder.end_cc_region();
+      }
+      CDSConfig::disable_dumping_cached_code();
+
+      SCCache::close(); // Write final data and close archive
+    }
+    write_static_archive(&builder, mapinfo, heap_info);
+  } else {
+    write_static_archive(&builder, mapinfo, heap_info);
+  }
+}
+
+void MetaspaceShared::write_static_archive(ArchiveBuilder* builder, FileMapInfo *mapinfo, ArchiveHeapInfo* heap_info) {
+  // relocate the data so that it can be mapped to MetaspaceShared::requested_base_address()
+  // without runtime relocation.
+  builder->relocate_to_requested();
+
+  mapinfo->open_for_write();
+  builder->write_archive(mapinfo, heap_info);
+
+  if (PrintSystemDictionaryAtExit) {
+    SystemDictionary::print();
+  }
+
+  if (AllowArchivingWithJavaAgent) {
+    log_warning(cds)("This archive was created with AllowArchivingWithJavaAgent. It should be used "
+            "for testing purposes only and should not be used in a production environment");
+  }
+}
+
+void MetaspaceShared::fork_and_dump_final_static_archive() {
+  assert(CDSConfig::is_dumping_preimage_static_archive(), "sanity");
+
+  ResourceMark rm;
+  stringStream st;
+  st.print("%s%sbin%sjava", Arguments::get_java_home(), os::file_separator(), os::file_separator());
+  const char* cp = Arguments::get_appclasspath();
+  if (cp != nullptr && strlen(cp) > 0 && strcmp(cp, ".") != 0) {
+    st.print(" -cp ");  st.print_raw(cp);
+  }
+  for (int i = 0; i < Arguments::num_jvm_flags(); i++) {
+    st.print(" %s", Arguments::jvm_flags_array()[i]);
+  }
+  for (int i = 0; i < Arguments::num_jvm_args(); i++) {
+    st.print(" %s", Arguments::jvm_args_array()[i]);
+  }
+  st.print(" -XX:CDSPreimage=%s", SharedArchiveFile);
+
+  const char* cmd = st.freeze();
+  if (CDSManualFinalImage) {
+    tty->print_cr("-XX:+CDSManualFinalImage is specified");
+    tty->print_cr("Please manually execute the following command to create the final CDS image:");
+    tty->print("    "); tty->print_raw_cr(cmd);
+  } else {
+    log_info(cds)("Launching child process to create final CDS image:");
+    log_info(cds)("    %s", cmd);
+    int status = os::fork_and_exec(cmd);
+    if (status != 0) {
+      log_error(cds)("Child process finished; status = %d", status);
+      log_error(cds)("To reproduce the error");
+      ResourceMark rm;
+      LogStream ls(Log(cds)::error());
+      ls.print("    "); ls.print_raw_cr(cmd);
+      vm_direct_exit(status);
     } else {
-      log_info(cds)("Launching child process to create final CDS image:");
-      log_info(cds)("    %s", cmd);
-      int status = os::fork_and_exec(cmd);
+      log_info(cds)("Child process finished; status = %d", status);
+      status = remove(SharedArchiveFile);
       if (status != 0) {
-        log_error(cds)("Child process finished; status = %d", status);
-        log_error(cds)("To reproduce the error");
-        ResourceMark rm;
-        LogStream ls(Log(cds)::error());
-        ls.print("    "); ls.print_raw_cr(cmd);
-        vm_direct_exit(status);
+        log_error(cds)("Failed to remove CDSPreimage file %s", SharedArchiveFile);
       } else {
-        log_info(cds)("Child process finished; status = %d", status);
-        status = remove(SharedArchiveFile);
-        if (status != 0) {
-          log_error(cds)("Failed to remove CDSPreimage file %s", SharedArchiveFile);
-        } else {
-          log_info(cds)("Removed CDSPreimage file %s", SharedArchiveFile);
-        }
+        log_info(cds)("Removed CDSPreimage file %s", SharedArchiveFile);
       }
     }
   }
@@ -1216,7 +1109,7 @@ void MetaspaceShared::initialize_runtime_shared_and_meta_spaces() {
   assert(UseSharedSpaces, "Must be called when UseSharedSpaces is enabled");
   MapArchiveResult result = MAP_ARCHIVE_OTHER_FAILURE;
 
-  FileMapInfo* static_mapinfo = open_static_archive();
+  FileMapInfo* static_mapinfo = FileMapInfo::current_info();
   FileMapInfo* dynamic_mapinfo = nullptr;
 
   if (static_mapinfo != nullptr) {
@@ -1288,15 +1181,21 @@ void MetaspaceShared::initialize_runtime_shared_and_meta_spaces() {
   }
 }
 
-FileMapInfo* MetaspaceShared::open_static_archive() {
+// This is called very early at VM start up to get the size of the cached_code region, which
+// is used in CodeCache::initialize_heaps()
+void MetaspaceShared::open_static_archive() {
+  if (!UseSharedSpaces) {
+    return;
+  }
   const char* static_archive = Arguments::GetSharedArchivePath();
   assert(static_archive != nullptr, "SharedArchivePath is nullptr");
   FileMapInfo* mapinfo = new FileMapInfo(static_archive, true);
   if (!mapinfo->initialize()) {
     delete(mapinfo);
-    return nullptr;
+  } else {
+    FileMapRegion* r = mapinfo->region_at(MetaspaceShared::cc);
+    CDSAccess::set_cached_code_size(r->used());
   }
-  return mapinfo;
 }
 
 FileMapInfo* MetaspaceShared::open_dynamic_archive() {
@@ -1779,6 +1678,8 @@ void MetaspaceShared::initialize_shared_spaces() {
 
   CDS_JAVA_HEAP_ONLY(Universe::update_archived_basic_type_mirrors());
   CDS_JAVA_HEAP_ONLY(Universe::update_exception_instances());
+
+  SCCache::new_workflow_load_cache();
 
   // Close the mapinfo file
   static_mapinfo->close();
