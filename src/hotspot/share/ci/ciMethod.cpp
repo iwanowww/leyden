@@ -173,7 +173,7 @@ ciMethod::ciMethod(const methodHandle& h_m, ciInstanceKlass* holder) :
       warning("wrong format for TooManyTrapsAtBCI option: \"%s\"", bci_list);
       break;
     }
-    assert(v >= 0 && v < (1<<16), "%i", v);
+    assert(v >= -1 && v < (1<<16), "%i", v); // -1 == any
     _has_trap_at_bci->append_if_missing(v);
     i += read;
   }

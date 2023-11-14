@@ -386,7 +386,8 @@ class ciMethod : public ciMetadata {
   static bool is_consistent_info(ciMethod* declared_method, ciMethod* resolved_method);
   bool has_trap_at(int bci) {
     return _has_trap_at_bci != nullptr &&
-           _has_trap_at_bci->contains(bci);
+           (_has_trap_at_bci->contains(bci) ||
+            _has_trap_at_bci->contains(-1)); // -1 == any
   }
 };
 
