@@ -1268,7 +1268,7 @@ PROF_ENTRY(nmethod*, InterpreterRuntime, frequency_counter_overflow,
   MACOS_AARCH64_ONLY(ThreadWXEnable wx(WXWrite, current));
 
   // frequency_counter_overflow_inner can throw async exception.
-  nmethod* nm = (UseNewCode3 ? nullptr : frequency_counter_overflow_inner(current, branch_bcp));
+  nmethod* nm = frequency_counter_overflow_inner(current, branch_bcp);
   assert(branch_bcp != nullptr || nm == nullptr, "always returns null for non OSR requests");
   if (branch_bcp != nullptr && nm != nullptr) {
     // This was a successful request for an OSR nmethod.  Because
