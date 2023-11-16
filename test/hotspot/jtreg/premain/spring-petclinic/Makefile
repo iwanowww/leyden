@@ -37,9 +37,14 @@
 # Set the following to point to JDK 17 and your Leyden JDK build.
 #
 #  *** NOTE: JDK 17 (or 21??) is needed to build spring-petclinic-3.1.0-SNAPSHOT.jar
-JDK17_HOME   = /jdk3/official/jdk17
-PREMAIN_HOME = /jdk3/bld/le4/images/jdk
+#JDK17_HOME   = /jdk3/official/jdk17
+#PREMAIN_HOME = /jdk3/bld/le4/images/jdk
 #===============================================================================
+
+# export JDK17_HOME=/scratch/vlivanov/jdk/build/linux-x64-release/images/jdk/
+# export PREMAIN_HOME=/scratch/vlivanov/leyden/build/linux-x64-fastdebug/images/jdk/
+# export M2_HOME=$HOME
+# export _JAVA_OPTIONS="-Duser.home=${HOME} -Dhttp.proxyHost=www-proxy.us.oracle.com -Dhttp.proxyPort=80 -Dhttps.proxyHost=www-proxy.us.oracle.com -Dhttps.proxyPort=80"
 
 # Usually there's no need to change the following
 JAR_CMD          = ${JDK17_HOME}/bin/jar
@@ -65,7 +70,7 @@ PC_CDS_PREIMAGE  = spring-petclinic.cds.preimage
 PC_CDS          = spring-petclinic.cds
 
 HEAP_SIZE        = -Xmx2g
-UNPACKED_CMDLINE = $(HEAP_SIZE) -cp @${PC_APP_UNPACKED}/classpath -DautoQuit=true -Dspring.aot.enabled=true -Dspring.output.ansi.enabled=NEVER ${PC_MAIN_CLASS}
+UNPACKED_CMDLINE = $(HEAP_SIZE) -cp @${PC_APP_UNPACKED}/classpath -Dspring.aot.enabled=true -Dspring.output.ansi.enabled=NEVER ${PC_MAIN_CLASS}
 
 all: check git app aot
 
@@ -126,7 +131,7 @@ ${PC_APP_UNPACKED}: ${PC_APP_JAR}
 #SAVE_GEN_FILES=-Djdk.proxy.ProxyGenerator.saveGeneratedFiles=true
 
 ${PC_CLASSLIST}: ${PC_APP_UNPACKED}
-	${PREMAIN_JAVA} -Xshare:off -XX:DumpLoadedClassList=${PC_CLASSLIST} \
+	${PREMAIN_JAVA} -Xshare:off -XX:DumpLoadedClassList=${PC_CLASSLIST} -XX:+ArchiveReflectionData \
 	    -Xlog:class+load=debug:file=spring-petclinic.classload.log ${SAVE_GEN_FILES} \
 	    ${UNPACKED_CMDLINE}
 	wc -lc ${PC_CLASSLIST}
@@ -134,19 +139,21 @@ ${PC_CLASSLIST}: ${PC_APP_UNPACKED}
 ${PC_STATIC_JSA}: ${PC_CLASSLIST}
 	rm -f ${PC_STATIC_JSA}.log
 	${PREMAIN_JAVA} -Xshare:dump -XX:SharedClassListFile=${PC_CLASSLIST} $(HEAP_SIZE) -cp @${PC_APP_UNPACKED}/classpath \
-	    -XX:SharedArchiveFile=${PC_STATIC_JSA} -XX:+ArchiveInvokeDynamic -Xlog:cds=debug,cds+class=debug,cds+heap=warning,cds+resolve=debug:file=${PC_STATIC_JSA}.log
+		-XX:SharedArchiveFile=${PC_STATIC_JSA} -XX:+ArchiveInvokeDynamic -XX:+ArchiveReflectionData \
+	    -Xlog:cds=debug,cds+class=debug,cds+heap=warning,cds+resolve=debug:file=${PC_STATIC_JSA}.log
 	ls -l ${PC_STATIC_JSA}
 
 ${PC_DYNAMIC_JSA}: ${PC_STATIC_JSA}
 	rm -f ${PC_DYNAMIC_JSA} ${PC_DYNAMIC_JSA}.log
 	${PREMAIN_JAVA} -XX:SharedArchiveFile=${PC_STATIC_JSA} -XX:ArchiveClassesAtExit=${PC_DYNAMIC_JSA} \
 	    -Xlog:cds=debug,cds+class=debug,cds+resolve=debug:file=${PC_DYNAMIC_JSA}.log \
-	    -XX:+RecordTraining ${UNPACKED_CMDLINE}
+	    -XX:+RecordTraining -Diterations=200 ${UNPACKED_CMDLINE}
 	ls -l ${PC_DYNAMIC_JSA}
 
 ${PC_CACHED_CODE}: ${PC_DYNAMIC_JSA}
 	${PREMAIN_JAVA} -XX:SharedArchiveFile=${PC_DYNAMIC_JSA} -XX:+ReplayTraining -XX:+StoreCachedCode \
-	     -XX:CachedCodeFile=${PC_CACHED_CODE} -XX:CachedCodeMaxSize=512M ${UNPACKED_CMDLINE}
+	     -XX:CachedCodeFile=${PC_CACHED_CODE} -XX:CachedCodeMaxSize=512M \
+	     -Diterations=200 ${UNPACKED_CMDLINE}
 	ls -l ${PC_CACHED_CODE}
 
 # run with premain optimizatipn

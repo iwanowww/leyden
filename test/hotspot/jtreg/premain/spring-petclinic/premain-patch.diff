@@ -49,22 +49,75 @@ index ce92ea5..07a81c8 100644
        </plugin>
        <plugin>
 diff --git a/src/main/java/org/springframework/samples/petclinic/PetClinicApplication.java b/src/main/java/org/springframework/samples/petclinic/PetClinicApplication.java
-index ac6e150..28b3931 100644
+index ac6e150..3ef7b5c 100644
 --- a/src/main/java/org/springframework/samples/petclinic/PetClinicApplication.java
 +++ b/src/main/java/org/springframework/samples/petclinic/PetClinicApplication.java
-@@ -31,7 +31,15 @@ import org.springframework.context.annotation.ImportRuntimeHints;
+@@ -30,8 +30,67 @@ import org.springframework.context.annotation.ImportRuntimeHints;
+ @ImportRuntimeHints(PetClinicRuntimeHints.class)
  public class PetClinicApplication {
  
- 	public static void main(String[] args) {
++	static void iteration(int i, String[] args) {
 +		long begin = System.currentTimeMillis();
- 		SpringApplication.run(PetClinicApplication.class, args);
++		org.springframework.context.ConfigurableApplicationContext ctx = SpringApplication
++			.run(PetClinicApplication.class, args);
 +		long end = System.currentTimeMillis();
-+		Boolean quit = Boolean.getBoolean("autoQuit");
-+		if (quit) {
-+			System.out.println("#### Booted and returned in " + (end - begin) + "ms");
-+			System.exit(0);
-+		}
++		System.out.println(i + ": #### Booted and returned in " + (end - begin) + "ms");
++		ctx.close();
++	}
 +
++	static void iteration0(String[] args) {
++		iteration(0, args);
++	}
++
++	static void iteration1(String[] args) {
++		iteration(1, args);
++	}
++
++	static void iteration2(String[] args) {
++		iteration(2, args);
++	}
++
++	static void iteration3(String[] args) {
++		iteration(3, args);
++	}
++
++	static void iteration4(String[] args) {
++		iteration(4, args);
++	}
++
++	static void iteration5(String[] args) {
++		iteration(5, args);
++	}
++
+ 	public static void main(String[] args) {
+-		SpringApplication.run(PetClinicApplication.class, args);
++		Integer maxIters = Integer.getInteger("iterations", 1);
++		for (int i = 0; i < maxIters; i++) {
++			switch (i) {
++				case 0:
++					iteration0(args);
++					break;
++				case 1:
++					iteration1(args);
++					break;
++				case 2:
++					iteration2(args);
++					break;
++				case 3:
++					iteration3(args);
++					break;
++				case 4:
++					iteration4(args);
++					break;
++				case 5:
++					iteration5(args);
++					break;
++
++				default:
++					iteration(i, args);
++					break;
++			}
++		}
  	}
  
  }
