@@ -443,9 +443,9 @@ public:
   static jlong get_peak_compilation_time() {        return _peak_compilation_time; }
   static jlong get_total_compilation_time() {       return _t_total_compilation.milliseconds(); }
 
-  static bool is_preload_queue_empty() {
-    return _sc2_compile_queue->is_empty();
-  }
+  static void block_until_preloading_completion(JavaThread* current);
+
+  static bool is_sc_queue(CompileQueue* queue);
 
   // Log that compilation profiling is skipped because metaspace is full.
   static void log_metaspace_failure();

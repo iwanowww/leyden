@@ -433,6 +433,10 @@ CompileTask* CompileQueue::get(CompilerThread* thread) {
       break;
     }
 
+    if (CompileBroker::is_sc_queue(this)) {
+      locker.notify_all(); // wake up main thread waiting for preloading completion
+    }
+
     // If there are no compilation tasks and we can compile new jobs
     // (i.e., there is enough free space in the code cache) there is
     // no need to invoke the GC.
@@ -3112,4 +3116,19 @@ void CompileBroker::print_heapinfo(outputStream* out, const char* function, size
     out->print_cr("\n__ Compile & CodeCache (global) lock hold took %10.3f seconds _________\n", ts_global.seconds());
   }
   out->print_cr("\n__ CodeHeapStateAnalytics total duration %10.3f seconds _________\n", ts_total.seconds());
+}
+
+bool CompileBroker::is_sc_queue(CompileQueue* queue) {
+  return (queue == _sc1_compile_queue) ||
+         (queue == _sc2_compile_queue);
+}
+
+
+
+void CompileBroker::block_until_preloading_completion(JavaThread* current) {
+  assert(JavaThread::current() == current, "");
+  MonitorLocker ml(current, _sc2_compile_queue->lock());
+  while (!_sc2_compile_queue->is_empty()) {
+    ml.wait(10);
+  }
 }
