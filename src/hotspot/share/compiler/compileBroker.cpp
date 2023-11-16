@@ -185,6 +185,7 @@ elapsedTimer CompileBroker::_t_bailedout_compilation;
 
 uint CompileBroker::_total_bailout_count            = 0;
 uint CompileBroker::_total_invalidated_count        = 0;
+uint CompileBroker::_total_not_entrant_count        = 0;
 uint CompileBroker::_total_compile_count            = 0;
 uint CompileBroker::_total_osr_compile_count        = 0;
 uint CompileBroker::_total_standard_compile_count   = 0;
@@ -2726,6 +2727,17 @@ void CompileBroker::collect_statistics(CompilerThread* thread, elapsedTimer time
       _perf_total_bailout_count->inc();
     }
     _t_bailedout_compilation.add(time);
+
+    if (CITime || log_is_enabled(Info, init)) {
+      CompilerStatistics* stats = nullptr;
+      if (task->is_scc()) {
+        int level = task->preload() ? CompLevel_full_optimization : (comp_level - 1);
+        stats = &_scc_stats_per_level[level];
+      } else {
+        stats = &_stats_per_level[comp_level-1];
+      }
+      stats->_bailout.update(time, 0);
+    }
   } else if (!task->is_success()) {
     if (UsePerfData) {
       _perf_last_invalidated_method->set_value(counters->current_method());
@@ -2734,6 +2746,17 @@ void CompileBroker::collect_statistics(CompilerThread* thread, elapsedTimer time
     }
     _total_invalidated_count++;
     _t_invalidated_compilation.add(time);
+
+    if (CITime || log_is_enabled(Info, init)) {
+      CompilerStatistics* stats = nullptr;
+      if (task->is_scc()) {
+        int level = task->preload() ? CompLevel_full_optimization : (comp_level - 1);
+        stats = &_scc_stats_per_level[level];
+      } else {
+        stats = &_stats_per_level[comp_level-1];
+      }
+      stats->_invalidated.update(time, 0);
+    }
   } else {
     // Compilation succeeded
 
@@ -2742,7 +2765,7 @@ void CompileBroker::collect_statistics(CompilerThread* thread, elapsedTimer time
     _perf_total_compilation->inc(time.ticks());
     _peak_compilation_time = time.milliseconds() > _peak_compilation_time ? time.milliseconds() : _peak_compilation_time;
 
-    if (CITime) {
+    if (CITime || log_is_enabled(Info, init)) {
       int bytes_compiled = method->code_size() + task->num_inlined_bytecodes();
       if (is_osr) {
         _t_osr_compilation.add(time);
@@ -2849,6 +2872,24 @@ jlong CompileBroker::total_compilation_ticks() {
   return _perf_total_compilation != nullptr ? _perf_total_compilation->get_value() : 0;
 }
 
+void CompileBroker::log_not_entrant(nmethod* nm) {
+  _total_not_entrant_count++;
+  if (CITime || log_is_enabled(Info, init)) {
+    CompilerStatistics* stats = nullptr;
+    int level = nm->comp_level();
+    if (nm->is_scc()) {
+      if (nm->preloaded()) {
+        assert(level == CompLevel_full_optimization, "%d", level);
+        level = CompLevel_full_optimization + 1;
+      }
+      stats = &_scc_stats_per_level[level - 1];
+    } else {
+      stats = &_stats_per_level[level - 1];
+    }
+    stats->_made_not_entrant._count++;
+  }
+}
+
 void CompileBroker::print_times(const char* name, CompilerStatistics* stats) {
   tty->print_cr("  %s {speed: %6.3f bytes/s; standard: %6.3f s, %u bytes, %u methods; osr: %6.3f s, %u bytes, %u methods; nmethods_size: %u bytes; nmethods_code_size: %u bytes}",
                 name, stats->bytes_per_second(),
@@ -2856,6 +2897,78 @@ void CompileBroker::print_times(const char* name, CompilerStatistics* stats) {
                 stats->_osr._time.seconds(), stats->_osr._bytes, stats->_osr._count,
                 stats->_nmethods_size, stats->_nmethods_code_size);
 }
+
+static void print_helper(outputStream* st, const char* name, CompilerStatistics::Data data, bool print_time = true) {
+  if (data._count > 0) {
+    st->print("; %s: %4u methods", name, data._count);
+    if (print_time) {
+      st->print(" (in %.3fs)", data._time.seconds());
+    }
+  }
+}
+
+static void print_tier_helper(outputStream* st, const char* prefix, int tier, CompilerStatistics* stats) {
+  st->print("    %s%d: %5u methods", prefix, tier, stats->_standard._count);
+  if (stats->_standard._count > 0) {
+    st->print(" (in %.3fs)", stats->_standard._time.seconds());
+  }
+  print_helper(st, "osr",     stats->_osr);
+  print_helper(st, "bailout", stats->_bailout);
+  print_helper(st, "invalid", stats->_invalidated);
+  print_helper(st, "not_entrant", stats->_made_not_entrant, false);
+  st->cr();
+}
+
+static void print_queue_info(outputStream* st, CompileQueue* queue) {
+  if (queue != nullptr) {
+    MutexLocker ml(queue->lock());
+
+    st->print("  %s: %u tasks", queue->name(), queue->size());
+    if (queue->size() > 0) {
+      uint counts[] = {0, 0, 0, 0, 0}; // T1 ... T5
+      for (CompileTask* task = queue->first(); task != nullptr; task = task->next()) {
+        int tier = task->comp_level();
+        if (task->is_scc() && task->preload()) {
+          assert(tier == CompLevel_full_optimization, "%d", tier);
+          tier = CompLevel_full_optimization + 1;
+        }
+        counts[tier-1]++;
+      }
+      st->print(":");
+      for (int tier = CompLevel_simple; tier <= CompilationPolicy::highest_compile_level() + 1; tier++) {
+        uint cnt = counts[tier-1];
+        if (cnt > 0) {
+          st->print(" T%d: %u tasks;", tier, cnt);
+        }
+      }
+    }
+    st->cr();
+  }
+}
+void CompileBroker::print_statistics_on(outputStream* st) {
+  st->print_cr("  Total: %u methods; %u bailouts, %u invalidated, %u non_entrant",
+               _total_compile_count, _total_bailout_count, _total_invalidated_count, _total_not_entrant_count);
+  for (int tier = CompLevel_simple; tier <= CompilationPolicy::highest_compile_level(); tier++) {
+    print_tier_helper(st, "Tier", tier, &_stats_per_level[tier-1]);
+  }
+  st->cr();
+
+  if (LoadCachedCode || StoreCachedCode) {
+    for (int tier = CompLevel_simple; tier <= CompilationPolicy::highest_compile_level() + 1; tier++) {
+      if (tier != CompLevel_full_profile) {
+        print_tier_helper(st, "SC T", tier, &_scc_stats_per_level[tier - 1]);
+      }
+    }
+    st->cr();
+  }
+
+  print_queue_info(st, _c1_compile_queue);
+  print_queue_info(st, _c2_compile_queue);
+  print_queue_info(st, _c3_compile_queue);
+  print_queue_info(st, _sc1_compile_queue);
+  print_queue_info(st, _sc2_compile_queue);
+}
+
 
 void CompileBroker::print_times(bool per_compiler, bool aggregate) {
   if (per_compiler) {

@@ -214,6 +214,7 @@ class CompileBroker: AllStatic {
   static uint _total_compile_count;
   static uint _total_bailout_count;
   static uint _total_invalidated_count;
+  static uint _total_not_entrant_count;
   static uint _total_native_compile_count;
   static uint _total_osr_compile_count;
   static uint _total_standard_compile_count;
@@ -447,8 +448,12 @@ public:
 
   static bool is_sc_queue(CompileQueue* queue);
 
+  static void log_not_entrant(nmethod* nm);
+
   // Log that compilation profiling is skipped because metaspace is full.
   static void log_metaspace_failure();
+
+  static void print_statistics_on(outputStream* st);
 
   // CodeHeap State Analytics.
   static void print_info(outputStream *out);

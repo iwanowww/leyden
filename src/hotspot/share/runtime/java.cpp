@@ -171,6 +171,9 @@ void log_vm_init_stats() {
     log.print("Deoptimization events: ");
     Deoptimization::print_statistics_on(&log);
     log.cr();
+    log.print("Compilation statistics: ");
+    CompileBroker::print_statistics_on(&log);
+    log.cr();
     MutexLockerImpl::print_counters_on(&log);
     log.cr();
     log.print_cr("Runtime events for thread \"main\":");
