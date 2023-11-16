@@ -426,6 +426,9 @@
   product(bool, LoadCachedCode, false,                                      \
           "Load cached compiled code")                                      \
                                                                             \
+  product(uint, DisableCachedCode, 0,                                       \
+          "Disable cached code on some levels")                             \
+                                                                            \
   product(uint, ClassInitBarrierMode, 0,                                    \
           "Produce and use startup code which could be called "             \
           "on first method invocation, add class initialization barriers, " \
