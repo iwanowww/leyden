@@ -102,6 +102,7 @@
 #include "runtime/timerTrace.hpp"
 #include "runtime/trimNativeHeap.hpp"
 #include "runtime/vmOperations.hpp"
+#include "runtime/vmThermostat.hpp"
 #include "runtime/vm_version.hpp"
 #include "services/attachListener.hpp"
 #include "services/management.hpp"
@@ -917,6 +918,9 @@ jint Threads::create_vm(JavaVMInitArgs* args, bool* canTryAgain) {
       main_thread->set_profile_vm_ops(true);
     }
   }
+
+  // Start the VMThermostat thread
+  VMThermostat::initialize();
 
   return JNI_OK;
 }
