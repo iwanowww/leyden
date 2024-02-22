@@ -500,6 +500,12 @@ class SharedRuntime: AllStatic {
   static address resolve_virtual_call_C    (JavaThread* current);
   static address resolve_opt_virtual_call_C(JavaThread* current);
 
+  static void link_call_sites(nmethod* nm, JavaThread* current);
+  static bool link_call(nmethod* nm, Relocation* reloc, JavaThread* current);
+  static bool link_static_call(nmethod* nm, Relocation* reloc, JavaThread* current);
+  static bool link_virtual_call(nmethod* nm, Relocation* reloc, JavaThread* current);
+  static bool link_opt_virtual_call(nmethod* nm, Relocation* reloc, JavaThread* current);
+
   // arraycopy, the non-leaf version.  (See StubRoutines for all the leaf calls.)
   static void slow_arraycopy_C(oopDesc* src,  jint src_pos,
                                oopDesc* dest, jint dest_pos,

@@ -108,10 +108,6 @@ private:
   void ensure_initialized(CallInfo* call_info, Klass* receiver_klass);
   bool is_speculated_klass(Klass* receiver_klass);
 
-  // Inline cache states
-  void set_to_monomorphic();
-  void set_to_megamorphic(CallInfo* call_info);
-
 public:
   // conversion (machine PC to CompiledIC*)
   friend CompiledIC* CompiledIC_before(CompiledMethod* nm, address return_addr);
@@ -120,6 +116,10 @@ public:
   friend CompiledIC* CompiledIC_at(RelocIterator* reloc_iter);
 
   CompiledICData* data() const;
+
+  // Inline cache states
+  void set_to_monomorphic();
+  void set_to_megamorphic(CallInfo* call_info);
 
   // State
   bool is_clean()       const;

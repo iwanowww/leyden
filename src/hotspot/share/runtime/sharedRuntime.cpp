@@ -1192,6 +1192,39 @@ Method* SharedRuntime::extract_attached_method(vframeStream& vfst) {
   return nullptr;
 }
 
+static Bytecodes::Code adjust_bytecode(Method* attached_method, Method* callee, Bytecodes::Code bc) {
+  vmIntrinsics::ID id = callee->intrinsic_id();
+  // When VM replaces MH.invokeBasic/linkTo* call with a direct/virtual call,
+  // it attaches statically resolved method to the call site.
+  if (MethodHandles::is_signature_polymorphic(id) &&
+      MethodHandles::is_signature_polymorphic_intrinsic(id)) {
+    bc = MethodHandles::signature_polymorphic_intrinsic_bytecode(id);
+
+    // Adjust invocation mode according to the attached method.
+    switch (bc) {
+      case Bytecodes::_invokevirtual:
+        if (attached_method->method_holder()->is_interface()) {
+          bc = Bytecodes::_invokeinterface;
+        }
+        break;
+      case Bytecodes::_invokeinterface:
+        if (!attached_method->method_holder()->is_interface()) {
+          bc = Bytecodes::_invokevirtual;
+        }
+        break;
+      case Bytecodes::_invokehandle:
+        if (!MethodHandles::is_signature_polymorphic_method(attached_method)) {
+          bc = attached_method->is_static() ? Bytecodes::_invokestatic
+                                            : Bytecodes::_invokevirtual;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return bc;
+}
+
 // Finds receiver, CallInfo (i.e. receiver method), and calling bytecode
 // for a call current in progress, i.e., arguments has been pushed on stack
 // but callee has not been invoked yet.  Caller frame must be compiled.
@@ -1220,35 +1253,7 @@ Handle SharedRuntime::find_callee_info_helper(vframeStream& vfst, Bytecodes::Cod
   methodHandle attached_method(current, extract_attached_method(vfst));
   if (attached_method.not_null()) {
     Method* callee = bytecode.static_target(CHECK_NH);
-    vmIntrinsics::ID id = callee->intrinsic_id();
-    // When VM replaces MH.invokeBasic/linkTo* call with a direct/virtual call,
-    // it attaches statically resolved method to the call site.
-    if (MethodHandles::is_signature_polymorphic(id) &&
-        MethodHandles::is_signature_polymorphic_intrinsic(id)) {
-      bc = MethodHandles::signature_polymorphic_intrinsic_bytecode(id);
-
-      // Adjust invocation mode according to the attached method.
-      switch (bc) {
-        case Bytecodes::_invokevirtual:
-          if (attached_method->method_holder()->is_interface()) {
-            bc = Bytecodes::_invokeinterface;
-          }
-          break;
-        case Bytecodes::_invokeinterface:
-          if (!attached_method->method_holder()->is_interface()) {
-            bc = Bytecodes::_invokevirtual;
-          }
-          break;
-        case Bytecodes::_invokehandle:
-          if (!MethodHandles::is_signature_polymorphic_method(attached_method())) {
-            bc = attached_method->is_static() ? Bytecodes::_invokestatic
-                                              : Bytecodes::_invokevirtual;
-          }
-          break;
-        default:
-          break;
-      }
-    }
+    bc = adjust_bytecode(attached_method(), callee, bc);
   }
 
   assert(bc != Bytecodes::_illegal, "not initialized");
@@ -3186,4 +3191,174 @@ void SharedRuntime::on_slowpath_allocation_exit(JavaThread* current) {
 
   BarrierSet *bs = BarrierSet::barrier_set();
   bs->on_slowpath_allocation_exit(current, new_obj);
+}
+
+static CompiledDirectCall* direct_call_at(nmethod* nm, address pc) {
+  CompiledICLocker ic_locker(nm);
+  return CompiledDirectCall::at(pc);
+}
+
+static CompiledIC* inline_cache_at(nmethod* nm, address pc) {
+  CompiledICLocker ic_locker(nm);
+  return CompiledIC_at(nm, pc);
+}
+
+static Method* resolve_call_site(nmethod* nm, ScopeDesc* scope, address pc, TRAPS) {
+  methodHandle caller(THREAD, scope->method());
+  int bci = scope->bci();
+
+  Bytecode_invoke bytecode(caller, bci);
+  int bytecode_index = bytecode.index();
+  Bytecodes::Code bc = bytecode.invoke_code();
+
+  methodHandle attached_method(THREAD, nm->attached_method(pc));
+  if (attached_method.not_null()) {
+    Method* callee = bytecode.static_target(CHECK_AND_CLEAR_NULL);
+    bc = adjust_bytecode(attached_method(), callee, bc);
+  }
+
+  if (bc == Bytecodes::_invokedynamic || bc == Bytecodes::_invokehandle) {
+    return nullptr; // not supported yet
+  }
+
+  // Resolve method
+  CallInfo call_info;
+  if (attached_method.not_null()) {
+    // Parameterized by attached method.
+    Klass* defc = attached_method->method_holder();
+    Symbol* name = attached_method->name();
+    Symbol* type = attached_method->signature();
+    LinkInfo link_info(defc, name, type);
+    LinkResolver::cds_resolve_call(call_info, link_info, bc, CHECK_AND_CLEAR_NULL);
+  } else {
+    // Parameterized by bytecode.
+    constantPoolHandle constants(THREAD, caller->constants());
+
+    int cp_index = constants->klass_ref_index_at(bytecode_index, bc);
+    if (constants->tag_at(cp_index).is_klass()) { // resolved
+      LinkInfo link_info(constants, bytecode_index, bc, CHECK_AND_CLEAR_NULL);
+      LinkResolver::cds_resolve_call(call_info, link_info, bc, CHECK_AND_CLEAR_NULL);
+    }
+  }
+  if (call_info.selected_method() != nullptr &&
+      call_info.selected_method()->method_holder()->is_linked()) {
+    return call_info.selected_method();
+  }
+  return nullptr;
+}
+
+bool SharedRuntime::link_static_call(nmethod* nm, Relocation* reloc, JavaThread* current) {
+  if (!nm->preloaded() && !nm->has_clinit_barriers()) {
+    return false; // requires explicit clinit barriers
+  }
+  CompiledDirectCall* call = direct_call_at(nm, reloc->addr());
+  ScopeDesc* sd = nm->scope_desc_at(call->end_of_call());
+
+  methodHandle callee_method(current, resolve_call_site(nm, sd, reloc->addr(), current));
+
+  NoSafepointVerifier nsv;
+  if (!callee_method.is_null() && callee_method->method_holder()->is_linked()) {
+    CompiledICLocker ml(nm);
+    // Callsite is a direct call - set it to the destination method
+    call->set(callee_method);
+    return true;
+  }
+  return false;
+}
+
+bool SharedRuntime::link_opt_virtual_call(nmethod* nm, Relocation* reloc, JavaThread* current) {
+  CompiledDirectCall* call = direct_call_at(nm, reloc->addr());
+  ScopeDesc* sd = nm->scope_desc_at(call->end_of_call());
+
+  methodHandle callee_method(current, resolve_call_site(nm, sd, reloc->addr(), current));
+
+  if (!callee_method.is_null()) {
+    if (callee_method->is_private() || callee_method->is_final_method()) {
+      CompiledICLocker ml(nm);
+      // Callsite is a direct call - set it to the destination method
+      call->set(callee_method);
+      return true;
+    }
+  }
+  return false;
+}
+
+bool SharedRuntime::link_virtual_call(nmethod* nm, Relocation* reloc, TRAPS) {
+  CompiledIC* call = inline_cache_at(nm, reloc->addr());
+  ScopeDesc* sd = nm->scope_desc_at(call->end_of_call());
+
+  methodHandle caller(THREAD, sd->method());
+  int bci = sd->bci();
+  address pc = reloc->addr();
+
+  Bytecode_invoke bytecode(caller, bci);
+  int bytecode_index = bytecode.index();
+  Bytecodes::Code bc = bytecode.invoke_code();
+
+  methodHandle attached_method(THREAD, nm->attached_method(pc));
+  if (attached_method.not_null()) {
+    Method* callee = bytecode.static_target(CHECK_AND_CLEAR_false);
+    bc = adjust_bytecode(attached_method(), callee, bc);
+  }
+
+  // Resolve method
+  CallInfo call_info;
+  if (attached_method.not_null()) {
+    // Parameterized by attached method.
+    Klass* defc = attached_method->method_holder();
+    Symbol* name = attached_method->name();
+    Symbol* type = attached_method->signature();
+    LinkInfo link_info(defc, name, type);
+    LinkResolver::cds_resolve_call(call_info, link_info, bc, CHECK_AND_CLEAR_false);
+  } else {
+    // Parameterized by bytecode.
+    constantPoolHandle constants(THREAD, caller->constants());
+    int cp_index = constants->klass_ref_index_at(bytecode_index, bc);
+    if (constants->tag_at(cp_index).is_klass()) { // resolved
+      LinkInfo link_info(constants, bytecode_index, bc, CHECK_AND_CLEAR_false);
+      LinkResolver::cds_resolve_call(call_info, link_info, bc, CHECK_AND_CLEAR_false);
+    }
+  }
+
+  if (call_info.resolved_method() != nullptr && call_info.resolved_method()->method_holder()->is_linked()) {
+    CompiledICLocker ml(nm);
+    call->data()->initialize(&call_info, nullptr);
+    call->update(&call_info, nullptr); // FIXME: set to megamorphic
+    return true;
+  }
+  return false;
+}
+
+bool SharedRuntime::link_call(nmethod* nm, Relocation* reloc, JavaThread* current) {
+  switch (reloc->type()) {
+    case relocInfo::static_call_type     : return link_static_call     (nm, reloc, current);
+    case relocInfo::virtual_call_type    : return link_virtual_call    (nm, reloc, current);
+    case relocInfo::opt_virtual_call_type: return link_opt_virtual_call(nm, reloc, current);
+
+    default: fatal("not supported: %s", relocInfo::type_name(reloc->type()));
+  }
+}
+
+
+void SharedRuntime::link_call_sites(nmethod* nm, JavaThread* current) {
+  LogStreamHandle(Debug, nmethod, link) log;
+  if (log.is_enabled()) {
+    nm->print_value_on(&log);
+  }
+  RelocIterator iter(nm);
+  while (iter.next()) {
+    switch (iter.type()) {
+      case relocInfo::static_call_type:   // fall-through
+      case relocInfo::virtual_call_type:  // fall-through
+      case relocInfo::opt_virtual_call_type: {
+        bool success = link_call(nm, iter.reloc(), current);
+
+        if (log.is_enabled()) {
+          log.print("%s: ", success ? "SUCCESS" : "FAILED");
+          iter.print_current_on(&log);
+        }
+      }
+      default: break; // skip
+    }
+  }
 }

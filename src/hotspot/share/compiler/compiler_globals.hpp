@@ -441,6 +441,9 @@
           "other checks and constrains if needed "                          \
           "(0: no barriers; 1: uncommon trap; 2: full barrier)")            \
                                                                             \
+  product(bool, ForceClassInitBarriers, false, DIAGNOSTIC,                  \
+          "Force class initialization barriers in generated code")          \
+                                                                            \
   product(bool, StressClassInitBarriers, false, DIAGNOSTIC,                 \
           "Force slow path in class initialization barriers")               \
                                                                             \
@@ -490,6 +493,12 @@
                                                                             \
   product(bool, UseLockFreeCompileQueues, true,                             \
           "Use lock free compile queues")                                   \
+                                                                            \
+  product(bool, UseOptimizedVirtualCalls, true,                             \
+          "Issue opt_virtual calls in generated code")                      \
+                                                                            \
+  product(bool, LinkCallSites, false,                                       \
+          "Eagerly link call sites in generated code")                      \
 
 // end of COMPILER_FLAGS
 

@@ -3445,7 +3445,7 @@ void PhaseOutput::install_code(ciMethod*         target,
     if (C->has_clinit_barriers()) {
       assert(C->for_preload(), "sanity");
       // Build second version of code without class initialization barriers
-      if (C->env()->task()->compile_reason() == CompileTask::Reason_PrecompileForPreload) {
+      if (C->env()->task()->compile_reason() == CompileTask::Reason_PrecompileForPreload || ForceClassInitBarriers) {
         // don't automatically precompile a barrier-free version unless explicitly asked
       } else {
         C->record_failure(C2Compiler::retry_no_clinit_barriers());

@@ -385,13 +385,20 @@ CallGenerator* Compile::call_generator(ciMethod* callee, int vtable_index, bool 
     }
   } else {
     // Class Hierarchy Analysis or Type Profile reveals a unique target, or it is a static or special call.
-    CallGenerator* cg = CallGenerator::for_direct_call(callee, should_delay_inlining(callee, jvms));
-    // For optimized virtual calls assert at runtime that receiver object
-    // is a subtype of the method holder.
-    if (cg != nullptr && is_virtual_or_interface && !callee->is_static()) {
-      CallGenerator* trap_cg = CallGenerator::for_uncommon_trap(callee,
-          Deoptimization::Reason_receiver_constraint, Deoptimization::Action_none);
-      cg = CallGenerator::for_guarded_call(callee->holder(), trap_cg, cg);
+    CallGenerator* cg = nullptr;
+
+    if (UseOptimizedVirtualCalls || should_delay_inlining(callee, jvms) ||
+        callee->is_static() || callee->is_private() || callee->is_final_method()) {
+      cg = CallGenerator::for_direct_call(callee, should_delay_inlining(callee, jvms));
+      // For optimized virtual calls assert at runtime that receiver object
+      // is a subtype of the method holder.
+      if (cg != nullptr && is_virtual_or_interface && !callee->is_static()) {
+        CallGenerator* trap_cg = CallGenerator::for_uncommon_trap(callee,
+            Deoptimization::Reason_receiver_constraint, Deoptimization::Action_none);
+        cg = CallGenerator::for_guarded_call(callee->holder(), trap_cg, cg);
+      }
+    } else {
+      cg = CallGenerator::for_virtual_call(callee, vtable_index);
     }
     return cg;
   }

@@ -324,6 +324,8 @@ class LinkResolver: AllStatic {
   static void cds_resolve_static_call   (CallInfo& result, const LinkInfo& link_info, TRAPS);
   static void cds_resolve_special_call  (CallInfo& result, const LinkInfo& link_info, TRAPS);
 
+  static void cds_resolve_call(CallInfo& result, const LinkInfo& link_info, Bytecodes::Code byte, TRAPS);
+
   // same as above for compile-time resolution; but returns null handle instead of throwing
   // an exception on error also, does not initialize klass (i.e., no side effects)
   static Method* resolve_virtual_call_or_null(Klass* receiver_klass,
@@ -349,7 +351,7 @@ class LinkResolver: AllStatic {
                              Bytecodes::Code byte, TRAPS);
 
   // runtime resolving from attached method
-  static void resolve_invoke(CallInfo& result, Handle& recv,
+  static void resolve_invoke(CallInfo& result, Handle recv,
                              const methodHandle& attached_method,
                              Bytecodes::Code byte, TRAPS);
 

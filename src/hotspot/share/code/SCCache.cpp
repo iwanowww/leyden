@@ -106,7 +106,7 @@ void SCCache::initialize() {
     if (FLAG_IS_DEFAULT(ClassInitBarrierMode)) {
       FLAG_SET_DEFAULT(ClassInitBarrierMode, 1);
     }
-  } else if (ClassInitBarrierMode > 0) {
+  } else if (ClassInitBarrierMode > 0 && !ForceClassInitBarriers) {
     log_warning(scc, init)("Set ClassInitBarrierMode to 0 because StoreCachedCode and LoadCachedCode are false.");
     FLAG_SET_DEFAULT(ClassInitBarrierMode, 0);
   }
@@ -2417,6 +2417,7 @@ jobject SCCReader::read_oop(JavaThread* thread, const methodHandle& comp_method)
   } else if (kind == DataKind::MH_Oop_Shared) {
     code_offset = read_position();
     int k = *(int*)addr(code_offset);
+
     code_offset += sizeof(int);
     set_read_position(code_offset);
     obj = CDSAccess::get_archived_object(k);

@@ -616,6 +616,8 @@ public:
   bool     used() const { return _used; }
   void set_used()       { _used = true; }
 
+  void link_call_sites(TRAPS);
+
   // Post successful compilation
   void post_compiled_method(CompileTask* task);
 

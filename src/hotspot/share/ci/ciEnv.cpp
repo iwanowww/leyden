@@ -1236,20 +1236,26 @@ void ciEnv::register_method(ciMethod* target,
       }
     }
   }
-
-  NoSafepointVerifier nsv;
-  if (nm != nullptr) {
-    // Compilation succeeded, post what we know about it
-    nm->post_compiled_method(task());
-    task()->set_num_inlined_bytecodes(num_inlined_bytecodes());
-  } else if (install_code) {
-    // The CodeCache is full.
-    record_failure("code cache is full");
-  } else {
-    task()->set_num_inlined_bytecodes(num_inlined_bytecodes());
+  {
+    NoSafepointVerifier nsv;
+    if (nm != nullptr) {
+      // Compilation succeeded, post what we know about it
+      nm->post_compiled_method(task());
+      task()->set_num_inlined_bytecodes(num_inlined_bytecodes());
+    } else if (install_code) {
+      // The CodeCache is full.
+      record_failure("code cache is full");
+    } else {
+      task()->set_num_inlined_bytecodes(num_inlined_bytecodes());
+    }
   }
 
   // safepoints are allowed again
+  if (LinkCallSites) {
+    guarantee(!HAS_PENDING_EXCEPTION, "");
+    SharedRuntime::link_call_sites(nm, THREAD);
+    guarantee(!HAS_PENDING_EXCEPTION, "");
+  }
 }
 
 // ------------------------------------------------------------------

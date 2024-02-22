@@ -753,6 +753,7 @@ objArrayOop InstanceKlass::signers() const {
 // process. The step comments refers to the procedure described in that section.
 // Note: implementation moved to static method to expose the this pointer.
 void InstanceKlass::initialize(TRAPS) {
+  guarantee(THREAD->can_call_java(), "%s", THREAD->name());
   if (this->should_be_initialized()) {
     initialize_impl(CHECK);
     // Note: at this point the class may be initialized

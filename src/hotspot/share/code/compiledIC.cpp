@@ -76,11 +76,13 @@ CompiledICData::CompiledICData()
 
 // Inline cache callsite info is initialized once the first time it is resolved
 void CompiledICData::initialize(CallInfo* call_info, Klass* receiver_klass) {
-  _speculated_method = call_info->selected_method();
-  if (UseCompressedClassPointers) {
-    _speculated_klass = (uintptr_t)CompressedKlassPointers::encode_not_null(receiver_klass);
-  } else {
-    _speculated_klass = (uintptr_t)receiver_klass;
+  if (receiver_klass != nullptr) {
+    _speculated_method = call_info->selected_method();
+    if (UseCompressedClassPointers) {
+      _speculated_klass = (uintptr_t) CompressedKlassPointers::encode_not_null(receiver_klass);
+    } else {
+      _speculated_klass = (uintptr_t) receiver_klass;
+    }
   }
   if (call_info->call_kind() == CallInfo::itable_call) {
     _itable_defc_klass = call_info->resolved_method()->method_holder();
@@ -294,7 +296,7 @@ bool CompiledIC::is_megamorphic() const {
 }
 
 bool CompiledIC::is_speculated_klass(Klass* receiver_klass) {
-  return data()->speculated_klass() == receiver_klass;
+  return receiver_klass != nullptr && (data()->speculated_klass() == receiver_klass);
 }
 
 // GC support

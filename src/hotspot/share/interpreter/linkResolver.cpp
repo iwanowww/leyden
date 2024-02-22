@@ -1330,6 +1330,9 @@ void LinkResolver::resolve_virtual_call(CallInfo& result, Handle recv, Klass* re
 
 void LinkResolver::cds_resolve_virtual_call(CallInfo& result, const LinkInfo& link_info, TRAPS) {
   Method* resolved_method = linktime_resolve_virtual_method(link_info, CHECK);
+  if (!resolved_method->method_holder()->is_linked()) {
+    return;
+  }
   runtime_resolve_virtual_method(result, methodHandle(THREAD, resolved_method),
                                  link_info.resolved_klass(),
                                  Handle(), nullptr,
@@ -1472,6 +1475,9 @@ void LinkResolver::resolve_interface_call(CallInfo& result, Handle recv, Klass* 
 
 void LinkResolver::cds_resolve_interface_call(CallInfo& result, const LinkInfo& link_info, TRAPS) {
   Method* resolved_method = linktime_resolve_interface_method(link_info, CHECK);
+  if (!resolved_method->method_holder()->is_linked()) {
+    return;
+  }
   runtime_resolve_interface_method(result, methodHandle(THREAD, resolved_method), link_info.resolved_klass(),
                                    Handle(), nullptr,
                                    /*check_null_and_abstract*/ false,
@@ -1691,7 +1697,7 @@ void LinkResolver::resolve_invoke(CallInfo& result, Handle recv, const constantP
   return;
 }
 
-void LinkResolver::resolve_invoke(CallInfo& result, Handle& recv,
+void LinkResolver::resolve_invoke(CallInfo& result, Handle recv,
                              const methodHandle& attached_method,
                              Bytecodes::Code byte, TRAPS) {
   Klass* defc = attached_method->method_holder();
@@ -1718,6 +1724,19 @@ void LinkResolver::resolve_invoke(CallInfo& result, Handle& recv,
       break;
   }
 }
+
+void LinkResolver::cds_resolve_call(CallInfo& result, const LinkInfo& link_info, Bytecodes::Code bc, TRAPS) {
+  switch (bc) {
+    case Bytecodes::_invokestatic   : cds_resolve_static_call   (result, link_info, CHECK); break;
+    case Bytecodes::_invokespecial  : cds_resolve_special_call  (result, link_info, CHECK); break;
+    case Bytecodes::_invokevirtual  : cds_resolve_virtual_call  (result, link_info, CHECK); break;
+    case Bytecodes::_invokeinterface: cds_resolve_interface_call(result, link_info, CHECK); break;
+    default                         : fatal("not supported: %s", Bytecodes::name(bc));      break;
+  }
+  return;
+
+}
+
 
 void LinkResolver::resolve_invokestatic(CallInfo& result, const constantPoolHandle& pool, int index, TRAPS) {
   LinkInfo link_info(pool, index, Bytecodes::_invokestatic, CHECK);
