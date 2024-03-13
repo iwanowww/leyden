@@ -142,6 +142,7 @@ Thread::Thread(MemTag mem_tag) {
   _profile_vm_ops   = false;
   _profile_rt_calls = false;
   _profile_upcalls  = false;
+  _profile_execution = false;
 
   _all_bc_counter_value = 0;
   _clinit_bc_counter_value = 0;
