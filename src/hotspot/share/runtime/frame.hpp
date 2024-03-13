@@ -188,6 +188,9 @@ class frame {
   bool is_runtime_frame()        const;
   bool is_compiled_frame()       const;
   bool is_safepoint_blob_frame() const;
+  bool is_exception_blob_frame() const;
+  bool is_deoptimization_blob_frame() const;
+  bool is_uncommon_trap_blob_frame() const;
   bool is_deoptimized_frame()    const;
   bool is_upcall_stub_frame()    const;
   bool is_heap_frame()             const { return _on_heap; }

@@ -745,6 +745,13 @@ jint Threads::create_vm(JavaVMInitArgs* args, bool* canTryAgain) {
     }
   }
 
+  if (log_is_enabled(Info, thermostat) || log_is_enabled(Info, profile)) {
+    main_thread->set_profile_execution(true);
+  }
+
+  // Start the VMThermostat thread
+  VMThermostat::initialize();
+
   // Launch -Xrun agents if EagerXrunInit is not set.
   if (!EagerXrunInit) {
     JvmtiAgentList::load_xrun_agents();
@@ -918,9 +925,6 @@ jint Threads::create_vm(JavaVMInitArgs* args, bool* canTryAgain) {
       main_thread->set_profile_vm_ops(true);
     }
   }
-
-  // Start the VMThermostat thread
-  VMThermostat::initialize();
 
   return JNI_OK;
 }

@@ -257,6 +257,22 @@ bool frame::is_safepoint_blob_frame() const {
   return (_cb != nullptr && _cb->is_safepoint_stub());
 }
 
+bool frame::is_exception_blob_frame() const {
+  return (_cb != nullptr && _cb->is_exception_stub());
+}
+
+bool frame::is_deoptimization_blob_frame() const {
+  return (_cb != nullptr && _cb->is_deoptimization_stub());
+}
+
+bool frame::is_uncommon_trap_blob_frame() const {
+  return (_cb != nullptr && _cb->is_uncommon_trap_stub());
+}
+
+//_cb->is_adapter_blob()
+//_cb->is_vtable_blob()
+//_cb->is_method_handles_adapter_blob()
+
 // testers
 
 bool frame::is_first_java_frame() const {

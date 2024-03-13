@@ -660,6 +660,7 @@ protected:
   bool  _profile_vm_ops;
   bool  _profile_rt_calls;
   bool  _profile_upcalls;
+  bool  _profile_execution;
 
   jlong    _all_bc_counter_value;
   jlong _clinit_bc_counter_value;
@@ -680,6 +681,9 @@ protected:
 
   bool     profile_upcalls() const { return _profile_upcalls; }
   void set_profile_upcalls(bool v) { _profile_upcalls = v; }
+
+  bool     profile_execution() const { return _profile_execution; }
+  void set_profile_execution(bool v) { _profile_execution = v; }
 
   PerfTraceTime*     current_rt_call_timer() const           { return _current_rt_call_timer;            }
   void           set_current_rt_call_timer(PerfTraceTime* c) {        _current_rt_call_timer = c;        }
