@@ -29,6 +29,7 @@
 #include "runtime/os.hpp"
 #include "runtime/threadSMR.inline.hpp"
 #include "runtime/vmThermostat.hpp"
+#include "utilities/nativeStackPrinter.hpp"
 #include "utilities/ticks.hpp"
 
 static constexpr uint64_t sampling_interval_nanos = 100000; // 1000 us
@@ -112,19 +113,19 @@ int VMThermostat::wait_for_tick() {
   }
 }
 
-static void trace_frame(outputStream* st, frame f, JavaThread* jt) {
+static void trace_frame(outputStream* st, frame f) {
   CodeBlob* cb = f.cb();
   if (cb != nullptr) {
     cb->print_on(st);
   } else {
     st->print_cr("cb == nullptr");
   }
-  f.print_value_on(st, jt);
+  f.print_value_on(st);
 }
 static void trace_sample(outputStream* st, JavaThread* jt, frame f) {
   jt->print_thread_state_on(st);
-  trace_frame(st, jt->last_frame(), jt);
-  trace_frame(st, f, jt);
+  trace_frame(st, jt->last_frame());
+  trace_frame(st, f);
 }
 
 void VMThermostat::ThermostatHandshake::do_thread(Thread* thread) {
@@ -179,7 +180,7 @@ void VMThermostat::ThermostatHandshake::do_thread(Thread* thread) {
   } else if (f.is_compiled_frame()) {
     nmethod* nm = f.cb()->as_nmethod();
     int type = COMPILED_BASE;
-    if (nm->is_scc()) {
+    if (nm->is_aot()) {
       type = SHARED_BASE;
     }
     if (nm->preloaded()) {
@@ -199,8 +200,11 @@ void VMThermostat::ThermostatHandshake::do_thread(Thread* thread) {
   } else {
     LogStreamHandle(Debug, profile) log;
     if (log.is_enabled()) {
+      NativeStackPrinter nsp(jt);
       trace_sample(&log, jt, f);
-      jt->print_native_stack_on(&log);
+      char buf[O_BUFLEN];
+      nsp.print_stack_from_frame(&log, f, buf, sizeof(buf),
+                                 false /* print_source_info */, -1 /* max stack */);
     }
     _sample = UNKNOWN;
   }
