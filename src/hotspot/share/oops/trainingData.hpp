@@ -500,6 +500,8 @@ class KlassTrainingData : public TrainingData {
 
   void notice_fully_initialized() NOT_CDS_RETURN;
 
+  bool is_dep_satisfied();
+
   void print_on(outputStream* st, bool name_only) const;
   virtual void print_on(outputStream* st) const { print_on(st, false); }
   virtual void print_value_on(outputStream* st) const { print_on(st, true); }
@@ -553,6 +555,7 @@ class CompileTrainingData : public TrainingData {
   MethodTrainingData* _method;
   const short _level;
   const int _compile_id;
+  int  _duration;
 
   // classes that should be initialized before this JIT task runs
   DepList<KlassTrainingData*> _init_deps;
@@ -670,7 +673,7 @@ private:
                       int level,
                       int compile_id)
       : TrainingData(),  // empty key
-        _method(mtd), _level(level), _compile_id(compile_id), _init_deps_left(0) { }
+        _method(mtd), _level(level), _compile_id(compile_id), _duration(0), _init_deps_left(0) { }
 public:
   ciRecords& ci_records() { return _ci_records; }
   static CompileTrainingData* make(CompileTask* task) NOT_CDS_RETURN_(nullptr);
@@ -682,6 +685,13 @@ public:
   int level() const { return _level; }
 
   int compile_id() const { return _compile_id; }
+
+  int duration() const { return _duration; }
+
+  void set_duration(int d) {
+    TrainingDataLocker::assert_locked();
+    _duration = d;
+  }
 
   int init_dep_count() const {
     TrainingDataLocker::assert_locked();

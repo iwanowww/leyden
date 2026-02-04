@@ -3286,8 +3286,12 @@ void AdapterHandlerLibrary::create_native_wrapper(const methodHandle& method) {
     const char *msg = method->is_static() ? "(static)" : "";
     CompileTask::print_ul(nm, msg);
     if (PrintCompilation) {
-      ttyLocker ttyl;
-      CompileTask::print(tty, nm, msg);
+      ResourceMark rm;
+      stringStream ss;
+      CompileTask::print(tty, nm, msg); // grabs a lock
+
+      ttyLocker ttyl;  // keep the following output all in one block
+      tty->print_raw(ss.base());
     }
     nm->post_compiled_method_load_event();
   }

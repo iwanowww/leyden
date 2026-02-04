@@ -1052,7 +1052,11 @@ void ciEnv::make_code_usable(JavaThread* thread, ciMethod* target, bool preload,
       if (TraceMethodReplacement && old != nullptr) {
         ResourceMark rm;
         char *method_name = method->name_and_sig_as_C_string();
-        tty->print_cr("Replacing method %s", method_name);
+        stringStream ss;
+        ss.print_cr("Replacing method %s:", method_name);
+        ss.print("old: "); CompileTask::print(&ss, old, "", /*short_form:*/ true);
+        ss.print("new: "); CompileTask::print(&ss, nm, "", /*short_form:*/ true);
+        tty->print_raw_cr(ss.base());
       }
       if (old != nullptr) {
         old->make_not_used();
@@ -1071,18 +1075,24 @@ void ciEnv::make_code_usable(JavaThread* thread, ciMethod* target, bool preload,
     // Allow the code to be executed
     MutexLocker ml(NMethodState_lock, Mutex::_no_safepoint_check_flag);
     if (nm->make_in_use()) {
-#ifdef ASSERT
       BarrierSetNMethod* bs_nm = BarrierSet::barrier_set()->barrier_set_nmethod();
-      if (bs_nm != nullptr && bs_nm->supports_entry_barrier(nm)) {
+      if (bs_nm != nullptr && !bs_nm->supports_entry_barrier(nm) && !bs_nm->is_armed(nm)) {
+        bs_nm->arm(nm);
         if (!bs_nm->is_armed(nm)) {
           log_info(init)("nmethod %d %d not armed", nm->compile_id(), nm->comp_level());
         }
       }
-#endif // ASSERT
+
       if (preload) {
         nm->set_preloaded(true);
         method->set_preload_code(nm);
       }
+
+      if (aot_code_entry != nullptr) {
+        assert(task()->is_aot_load(), "not an aot code");
+        nm->set_has_clinit_barriers(aot_code_entry->has_clinit_barriers());
+      }
+
       if (!preload || target->holder()->is_linked()) {
         method->set_code(method, nm);
       }

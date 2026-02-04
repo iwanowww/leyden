@@ -38,6 +38,7 @@
 #include "memory/allocation.hpp"
 #include "memory/allocation.inline.hpp"
 #include "memory/resourceArea.hpp"
+#include "oops/trainingData.hpp"
 #include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/vm_version.hpp"
@@ -255,6 +256,30 @@ bool Compiler::is_intrinsic_supported(vmIntrinsics::ID id) {
 
 void Compiler::compile_method(ciEnv* env, ciMethod* method, int entry_bci, bool install_code, DirectiveSet* directive) {
   CompileTask* task = env->task();
+  if (UseNewCode && install_code && !task->is_aot_load() &&
+      task->method()->in_aot_cache() && !task->requires_online_compilation()) {
+    if (!task->method()->method_holder()->is_not_initialized()) {
+      methodHandle mh(CompilerThread::current(), task->method());
+      MethodTrainingData* mtd = MethodTrainingData::find(mh);
+      if (mtd != nullptr) {
+        CompileTrainingData* ctd = mtd->last_toplevel_compile(task->comp_level());
+        if (ctd != nullptr && ctd->init_deps_left_acquire() == 0) {
+          AOTCodeEntry* aot_code_entry = AOTCodeCache::find_code_entry(mh, task->comp_level());
+          if (aot_code_entry != nullptr) {
+            task->set_aot_code_entry(aot_code_entry);
+
+            // upgrade L4 to A4
+            if (log_is_enabled(Debug, training)) {
+              LogStreamHandle(Debug, training) log;
+              log.print("Upgrade L%d->A%d: %d", task->comp_level(), task->comp_level(), task->compile_id()); task->method()->print_value_on(&log); log.print(": "); mtd->print_on(&log); log.print(" ; "); ctd->print_on(&log);
+            }
+
+            assert(task->is_aot_load(), "");
+          }
+        }
+      }
+    }
+  }
   if (install_code && task->is_aot_load()) {
     assert(!task->preload(), "Pre-loading AOT code is not implemeted for C1 code");
     bool success = AOTCodeCache::load_nmethod(env, method, entry_bci, this, CompLevel(task->comp_level()));

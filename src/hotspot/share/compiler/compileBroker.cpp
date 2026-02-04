@@ -1733,7 +1733,10 @@ bool CompileBroker::compilation_is_complete(Method*                    method,
         return false;
       }
       bool same_level = (comp_level == result->comp_level());
-      if (result->has_clinit_barriers()) {
+     if ((UseNewCode2 && result->preloaded()) ||
+         result->has_clinit_barriers()) {
+//     if (result->preloaded()) {
+//      if (result->has_clinit_barriers()) {
         return !same_level; // Allow replace preloaded code with new code of the same level
       }
       return same_level;
@@ -2666,6 +2669,20 @@ void CompileBroker::invoke_compiler_on_method(CompileTask* task) {
     break;
   }
 
+  if (UseNewCode && task->is_aot_load() && task->preload() && task->method()->method_holder()->is_initialized()) {
+    methodHandle mh(JavaThread::current(), task->method());
+    MethodTrainingData* mtd = MethodTrainingData::find(mh);
+    assert(mtd != nullptr, "");
+    CompileTrainingData* ctd = mtd->last_toplevel_compile(CompLevel_full_optimization);
+    assert(ctd != nullptr, "");
+    if (ctd->init_dep_count() == 0) {
+      if (log_is_enabled(Warning, training)) {
+        LogStreamHandle(Warning, training) log;
+        log.print_raw("Missed init deps: "); task->print(&log);
+      }
+    }
+  }
+
   // Note that the queued_for_compilation bits are cleared without
   // protection of a mutex. [They were set by the requester thread,
   // when adding the task to the compile queue -- at which time the
@@ -2677,7 +2694,6 @@ void CompileBroker::invoke_compiler_on_method(CompileTask* task) {
   method->set_pending_queue_processed(false);
 
   if (should_print_compilation) {
-    ResourceMark rm;
     task->print_tty();
   }
 }

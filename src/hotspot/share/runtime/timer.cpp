@@ -38,6 +38,10 @@ double TimeHelper::counter_to_millis(jlong counter) {
   return counter_to_seconds(counter) * 1000.0;
 }
 
+double TimeHelper::counter_to_micros(jlong counter) {
+  return counter_to_seconds(counter) * MICROUNITS;
+}
+
 jlong TimeHelper::millis_to_counter(jlong millis) {
   jlong freq = os::elapsed_frequency() / MILLIUNITS;
   return millis * freq;

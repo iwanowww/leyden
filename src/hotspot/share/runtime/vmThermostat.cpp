@@ -22,6 +22,7 @@
  *
  */
 
+#include "compiler/compileTask.hpp"
 #include "logging/log.hpp"
 #include "runtime/handshake.hpp"
 #include "runtime/interfaceSupport.inline.hpp"
@@ -163,7 +164,7 @@ void VMThermostat::ThermostatHandshake::do_thread(Thread* thread) {
   if (f.is_safepoint_blob_frame()) {
     f = f.sender(&map);
   }
-  if (UseNewCode) {
+  if (/* UseNewCode */ false) {
     if (f.is_entry_frame()               || // native->java entry frame; skip?
         f.is_runtime_frame()             || // SharedRuntime/Runtime1/OptoRuntime? skip?
         f.is_exception_blob_frame()      || // C2-specific? skip?
@@ -173,7 +174,7 @@ void VMThermostat::ThermostatHandshake::do_thread(Thread* thread) {
     }
   }
 
-  if (UseNewCode && f.is_empty()) {
+  if (/* UseNewCode */ false && f.is_empty()) {
     _sample = NO_JAVA;
   } else if (f.is_interpreted_frame()) {
     _sample = INTERPRETED;
@@ -187,6 +188,11 @@ void VMThermostat::ThermostatHandshake::do_thread(Thread* thread) {
       type = PRELOADED_BASE;
     }
     _sample = (Mode)(type + nm->comp_level() - 1);
+
+    LogStreamHandle(Trace, profile) log;
+    if (log.is_enabled()) {
+      CompileTask::print(&log, nm, "", /*short_form:*/ false);
+    }
   } else if (f.is_native_frame()) {
     _sample = IN_NATIVE;
   } else if (f.is_entry_frame()               || // native->java entry frame; skip?
@@ -195,7 +201,7 @@ void VMThermostat::ThermostatHandshake::do_thread(Thread* thread) {
              f.is_deoptimization_blob_frame() || // C1-specific? skip?
              f.is_uncommon_trap_blob_frame()) {  // C2-specific? skip?
     // TODO: should they be skipped instead?
-    guarantee(!UseNewCode, "not skipped");
+    // guarantee(!UseNewCode, "not skipped");
     _sample = IN_RUNTIME;
   } else {
     LogStreamHandle(Debug, profile) log;

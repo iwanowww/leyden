@@ -29,6 +29,7 @@
 #include "compiler/compileBroker.hpp"
 #include "oops/methodData.hpp"
 #include "oops/trainingData.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
 #include "utilities/globalDefinitions.hpp"
 
 namespace CompilationPolicyUtils {
@@ -76,7 +77,7 @@ class Queue {
 public:
   Queue() : _head(nullptr), _tail(nullptr) { }
   void push(T* value, Monitor* lock, JavaThread* current) {
-    MonitorLocker locker(current, lock);
+    MonitorLocker locker(current, lock, Mutex::_no_safepoint_check_flag);
     push_unlocked(value);
     locker.notify_all();
   }
@@ -85,7 +86,8 @@ public:
   bool is_processing_unlocked() const { return _processing > 0; }
 
   T* pop(Monitor* lock, JavaThread* current) {
-    MonitorLocker locker(current, lock);
+    ThreadToNativeFromVM ttn(current);
+    MonitorLocker locker(current, lock, Mutex::_no_safepoint_check_flag);
     while (is_empty_unlocked() && !CompileBroker::is_compilation_disabled_forever()) {
       locker.wait();
     }
@@ -94,7 +96,7 @@ public:
   }
 
   T* try_pop(Monitor* lock, JavaThread* current) {
-    MonitorLocker locker(current, lock);
+    MonitorLocker locker(current, lock, Mutex::_no_safepoint_check_flag);
     T* value = pop_unlocked();
     return value;
   }
@@ -246,7 +248,7 @@ class CompilationPolicy : AllStatic {
   friend class LoopPredicate;
   friend class RecompilationPolicy;
 
-  typedef CompilationPolicyUtils::Queue<InstanceKlass> TrainingReplayQueue;
+  typedef CompilationPolicyUtils::Queue<Metadata> TrainingReplayQueue;
 
   static int64_t _start_time;
   static int _c1_count, _c2_count, _ac_count;
@@ -386,6 +388,11 @@ class CompilationPolicy : AllStatic {
   static void sample_load_average();
   static bool have_recompilation_work();
   static bool recompilation_step(int step, TRAPS);
+
+  static void force_recompilation(nmethod* nm, JavaThread* current);
+  static void force_recompilation_impl(Method* m, JavaThread* current);
+
+  static void print_training_replay_queue_on(outputStream* st);
 };
 
 #endif // SHARE_COMPILER_COMPILATIONPOLICY_HPP

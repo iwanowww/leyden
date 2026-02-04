@@ -464,6 +464,62 @@ void print_statistics() {
 
   log_vm_init_stats();
 
+  if (log_is_enabled(Debug, init)) {
+    LogStreamHandle(Debug, init) log;
+    log.print_cr("Training Replay Queue:");
+    CompilationPolicy::print_training_replay_queue_on(&log);
+
+    log.print_cr("AOT cache unused entries (cache %s)", (AOTCodeCache::is_on() ? "on" : "off"));
+    // AOTCodeCache::print_unused_entries_on(&log);
+    if (AOTCodeCache::is_on()) {
+      int cnt = 0;
+      AOTCodeCache::iterate([&](AOTCodeEntry* entry) {
+        ResourceMark rm;
+        if (entry->is_nmethod() && !entry->is_loaded()) {
+          log.print("  [%3d] ", cnt++); entry->print(&log);
+          log.print("    "); entry->method()->print_value_on(&log);
+          MethodTrainingData* mtd = MethodTrainingData::find(methodHandle(Thread::current(), entry->method()));
+          stringStream ss;
+          if (mtd == nullptr) {
+            ss.print("mtd=null");
+          } else if (!mtd->has_holder()) {
+            ss.print("holder=null");
+          } else if (!mtd->holder()->method_holder()->is_initialized()) {
+            ss.print(" not_initialized");
+          }
+          if (entry->method()->queued_for_compilation()) {
+            ss.print(" queued");
+          }
+          log.print_raw_cr(ss.base());
+
+          if (entry->method()->code() != nullptr) {
+            log.print("    ");
+            CompileTask::print(&log, entry->method()->code(), "", /*short_form:*/ true);
+          }
+          mtd->iterate_compiles([&](CompileTrainingData* ctd) {
+            if ((uint)ctd->level() == entry->comp_level()) {
+              int init_deps_left = ctd->init_deps_left_acquire();
+              if (init_deps_left > 0) {
+                log.print("    "); ctd->print_value_on(&log); log.cr();
+                log.print_cr("    udeps=%d[%d]:", init_deps_left, ctd->compute_init_deps_left());
+                for (int i = 0, count = 0; i < ctd->init_dep_count(); i++) {
+                  KlassTrainingData* dep = ctd->init_dep(i);
+                  if (!dep->is_dep_satisfied()) {
+                    log.print("     - [%3d]:", count++); dep->print_value_on(&log); log.cr();
+                  }
+                }
+                ctd->print_on(&log); log.cr();
+              } else {
+                log.print("    "); ctd->print_on(&log); log.cr();
+              }
+            }
+          });
+          log.cr();
+        }
+      });
+    }
+  }
+
   if (log_is_enabled(Info, perf, class, link)) {
     LogStreamHandle(Info, perf, class, link) log;
     log.print_cr("At VM exit:");

@@ -22,6 +22,7 @@
  *
  */
 
+#include "code/aotCodeCache.hpp"
 #include "compiler/compilationPolicy.hpp"
 #include "compiler/compileBroker.hpp"
 #include "compiler/compileLog.hpp"
@@ -32,6 +33,7 @@
 #include "memory/resourceArea.hpp"
 #include "oops/klass.inline.hpp"
 #include "oops/method.inline.hpp"
+#include "oops/trainingData.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/jniHandles.hpp"
 #include "runtime/mutexLocker.hpp"
@@ -166,6 +168,50 @@ void CompileTask::metadata_do(MetadataClosure* f) {
   f->do_metadata(method());
 }
 
+void CompileTask::maybe_skip_preload() {
+  if (preload()) {
+    assert(_comp_level == CompLevel_full_optimization, "");
+    if (method()->method_holder()->is_initialized()) {
+      JavaThread* current = JavaThread::current();
+      methodHandle mh(current, method());
+      MethodTrainingData* mtd = MethodTrainingData::find(mh);
+      assert(mtd != nullptr, "");
+      CompileTrainingData* ctd = mtd->last_toplevel_compile(_comp_level);
+      assert(ctd != nullptr, "");
+      if (ctd->init_deps_left_acquire() == 0) {
+        AOTCodeEntry* aot_code_entry = AOTCodeCache::find_code_entry(mh, _comp_level);
+        if (aot_code_entry != nullptr && !aot_code_entry->not_entrant() && mh->get_method_counters(current) != nullptr) {
+          _aot_code_entry = aot_code_entry;
+          _compile_reason = Reason_MustBeCompiled;
+
+          // upgrade AP4 to A4
+          if (log_is_enabled(Debug, training)) {
+            LogStreamHandle(Debug, training) log;
+            log.print("Upgrade AP4->A4: %d", compile_id()); method()->print_value_on(&log); log.print(": "); mtd->print_on(&log); log.print(" ; "); ctd->print_on(&log);
+          }
+
+          assert(!preload(), "sanity");
+        }
+      }
+    }
+  }
+}
+
+// ------------------------------------------------------------------
+// CompileTask::mark_finished
+
+void CompileTask::mark_finished(jlong time) {
+  _time_finished = time;
+
+  if (TrainingData::need_data() && !CDSConfig::is_dumping_final_static_archive() && training_data() != nullptr) {
+    TrainingData::TrainingDataLocker l;
+    if (_time_finished != 0 && _time_started != 0) {
+      int duration_in_us = TimeHelper::counter_to_micros(_time_finished - _time_started);
+      training_data()->set_duration(duration_in_us);
+    }
+  }
+}
+
 // ------------------------------------------------------------------
 // CompileTask::print_line_on_error
 //
@@ -185,8 +231,12 @@ void CompileTask::print_line_on_error(outputStream* st, char* buf, int buflen) {
 // ------------------------------------------------------------------
 // CompileTask::print_tty
 void CompileTask::print_tty() {
+  ResourceMark rm;
+  stringStream ss;
+  print(&ss); // grabs a lock
+
   ttyLocker ttyl;  // keep the following output all in one block
-  print(tty);
+  tty->print_raw(ss.base());
 }
 
 // ------------------------------------------------------------------
@@ -243,10 +293,20 @@ void CompileTask::print_impl(outputStream* st, Method* method, int compile_id, i
   bool is_synchronized = false;
   bool has_exception_handler = false;
   bool is_native = false;
+  bool has_training_data = false;
+
+  char training_char = ' ';
+
   if (method != nullptr) {
     is_synchronized       = method->is_synchronized();
     has_exception_handler = method->has_exception_handler();
     is_native             = method->is_native();
+
+    if (method->in_aot_cache()) {
+      methodHandle mh(Thread::current(), method);
+      has_training_data = (MethodTrainingData::find(mh) != nullptr);
+      training_char = (has_training_data ? '+' : '*');
+    }
   }
   // method attributes
   const char compile_type   = is_osr_method                   ? '%' : ' ';
@@ -258,7 +318,7 @@ void CompileTask::print_impl(outputStream* st, Method* method, int compile_id, i
   const char preload_char   = is_preload                      ? 'P' : ' ';
 
   // print method attributes
-  st->print("%c%c%c%c%c%c%c ", compile_type, sync_char, exception_char, blocking_char, native_char, aot_char, preload_char);
+  st->print("%c %c%c%c%c%c%c%c ", training_char, compile_type, sync_char, exception_char, blocking_char, native_char, aot_char, preload_char);
 
   if (TieredCompilation) {
     if (comp_level != -1)  st->print("%d ", comp_level);

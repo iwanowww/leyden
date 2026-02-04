@@ -61,7 +61,7 @@ KlassTrainingData::KlassTrainingData() {
   assert(CDSConfig::is_dumping_static_archive() || UseSharedSpaces, "only for CDS");
 }
 
-CompileTrainingData::CompileTrainingData() : _level(-1), _compile_id(-1) {
+CompileTrainingData::CompileTrainingData() : _level(-1), _compile_id(-1), _duration(-1) {
   // Used by cppVtables.cpp only
   assert(CDSConfig::is_dumping_static_archive() || UseSharedSpaces, "only for CDS");
 }
@@ -286,7 +286,7 @@ uint CompileTrainingData::compute_init_deps_left(bool count_initialized) {
 
 void CompileTrainingData::print_on(outputStream* st, bool name_only) const {
   _method->print_on(st, true);
-  st->print("#%dL%d", _compile_id, _level);
+  st->print("#%dL%d duration=%dus", _compile_id, _level, _duration);
   if (name_only) {
     return;
   }
@@ -412,6 +412,23 @@ KlassTrainingData* KlassTrainingData::make(InstanceKlass* holder, bool null_if_n
     guarantee(ktd->holder() == holder, "");
   }
   return ktd;
+}
+
+bool KlassTrainingData::is_dep_satisfied() {
+  // Ignore symbolic refs and already initialized classes (unless explicitly requested).
+  if (!has_holder()) {
+    return true;
+  }
+  if (!holder()->is_initialized()) {
+    return false;
+  }
+  if (holder()->defined_by_other_loaders()) {
+    Key k(holder());
+    if (CDS_ONLY(!Key::can_compute_cds_hash(&k)) NOT_CDS(false)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void KlassTrainingData::print_on(outputStream* st, bool name_only) const {

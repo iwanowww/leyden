@@ -2040,7 +2040,6 @@ void nmethod::log_relocated_nmethod(nmethod* original) const {
 // Print out more verbose output usually for a newly created nmethod.
 void nmethod::print_on_with_msg(outputStream* st, const char* msg) const {
   if (st != nullptr) {
-    ttyLocker ttyl;
     if (WizardMode) {
       CompileTask::print(st, this, msg, /*short_form:*/ true);
       st->print_cr(" (" INTPTR_FORMAT ")", p2i(this));
@@ -2430,12 +2429,16 @@ void nmethod::log_state_change(InvalidationReason invalidation_reason) const {
   }
 
   ResourceMark rm;
-  stringStream ss(NEW_RESOURCE_ARRAY(char, 256), 256);
-  ss.print("made not entrant: %s", invalidation_reason_to_string(invalidation_reason));
+  stringStream msg(NEW_RESOURCE_ARRAY(char, 256), 256);
+  msg.print("made not entrant: %s", invalidation_reason_to_string(invalidation_reason));
 
-  CompileTask::print_ul(this, ss.freeze());
+  CompileTask::print_ul(this, msg.freeze());
   if (PrintCompilation) {
-    print_on_with_msg(tty, ss.freeze());
+    stringStream ss(NEW_RESOURCE_ARRAY(char, 256), 256);
+    print_on_with_msg(&ss, msg.freeze());
+
+    ttyLocker ttyl;
+    tty->print_raw(ss.freeze());
   }
 }
 

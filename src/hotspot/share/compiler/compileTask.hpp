@@ -153,6 +153,7 @@ class CompileTask : public CHeapObj<mtCompiler> {
   bool         is_success() const                   { return _is_success; }
   bool         is_aot_load() const                  { return _aot_code_entry != nullptr; }
   void         clear_aot()                          { _aot_code_entry = nullptr; }
+  void         set_aot_code_entry(AOTCodeEntry* entry) { _aot_code_entry = entry; }
   AOTCodeEntry* aot_code_entry()                    { return _aot_code_entry; }
   bool         requires_online_compilation() const  { return _requires_online_compilation; }
   DirectiveSet* directive() const                   { return _directive; }
@@ -199,13 +200,15 @@ class CompileTask : public CHeapObj<mtCompiler> {
     return reason_is_precompile(compile_reason());
   }
 
+  void maybe_skip_preload();
+
   CompileQueue* compile_queue() const            { return _compile_queue; }
 
   void         mark_complete()                   { _is_complete = true; }
   void         mark_success()                    { _is_success = true; }
   void         mark_queued(jlong time)           { _time_queued = time; }
   void         mark_started(jlong time)          { _time_started = time; }
-  void         mark_finished(jlong time)         { _time_finished = time; }
+  void         mark_finished(jlong time);
   void         mark_aot_load_start(jlong time)   { _aot_load_start = time; }
   void         mark_aot_load_finish(jlong time)  { _aot_load_finish = time; }
   int          comp_level()                      { return _comp_level;}

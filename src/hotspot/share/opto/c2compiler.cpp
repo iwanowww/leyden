@@ -27,6 +27,7 @@
 #include "compiler/compilationMemoryStatistic.hpp"
 #include "compiler/compilerDefinitions.inline.hpp"
 #include "jfr/support/jfrIntrinsics.hpp"
+#include "oops/trainingData.hpp"
 #include "opto/c2compiler.hpp"
 #include "opto/compile.hpp"
 #include "opto/optoreg.hpp"
@@ -129,6 +130,30 @@ void C2Compiler::compile_method(ciEnv* env, ciMethod* target, int entry_bci, boo
   assert(is_initialized(), "Compiler thread must be initialized");
   CompilationMemoryStatisticMark cmsm(directive);
   CompileTask* task = env->task();
+   if (UseNewCode && install_code && !task->is_aot_load() && task->method()->in_aot_cache() &&
+       !task->requires_online_compilation()) {
+    if (!task->method()->method_holder()->is_not_initialized()) {
+      methodHandle mh(CompilerThread::current(), task->method());
+      MethodTrainingData* mtd = MethodTrainingData::find(mh);
+      if (mtd != nullptr) {
+        CompileTrainingData* ctd = mtd->last_toplevel_compile(task->comp_level());
+        if (ctd != nullptr && ctd->init_deps_left_acquire() == 0) {
+          AOTCodeEntry* aot_code_entry = AOTCodeCache::find_code_entry(mh, task->comp_level());
+          if (aot_code_entry != nullptr) {
+            task->set_aot_code_entry(aot_code_entry);
+
+            // upgrade L4 to A4
+            if (log_is_enabled(Debug, training)) {
+              LogStreamHandle(Debug, training) log;
+              log.print("Upgrade L%d->A%d: %d", task->comp_level(), task->comp_level(), task->compile_id()); task->method()->print_value_on(&log); log.print(": "); mtd->print_on(&log); log.print(" ; "); ctd->print_on(&log);
+            }
+
+            assert(task->is_aot_load(), "");
+          }
+        }
+      }
+    }
+  }
   if (install_code && task->is_aot_load()) {
     bool success = AOTCodeCache::load_nmethod(env, target, entry_bci, this, CompLevel_full_optimization);
     if (success) {

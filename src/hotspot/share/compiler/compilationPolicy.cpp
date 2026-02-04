@@ -172,29 +172,55 @@ void CompilationPolicy::compile_if_required(const methodHandle& m, TRAPS) {
 }
 
 void CompilationPolicy::replay_training_at_init_impl(InstanceKlass* klass, JavaThread* current) {
-  if (!klass->has_init_deps_processed()) {
-    ResourceMark rm;
-    log_debug(training)("Replay training: %s", klass->external_name());
+  ResourceMark rm;
+  log_debug(training)("Replay training: %s", klass->external_name());
 
-    KlassTrainingData* ktd = KlassTrainingData::find(klass);
-    if (ktd != nullptr) {
-      guarantee(ktd->has_holder(), "");
+  KlassTrainingData* ktd = KlassTrainingData::find(klass);
+  if (ktd != nullptr) {
+    guarantee(ktd->has_holder(), "");
+    if (!klass->has_init_deps_processed()) {
       ktd->notice_fully_initialized(); // sets klass->has_init_deps_processed bit
       assert(klass->has_init_deps_processed(), "");
+    }
 
-      if (AOTCompileEagerly) {
-        GrowableArray<MethodTrainingData*> mtds;
-        ktd->iterate_comp_deps([&](CompileTrainingData* ctd) {
-          if (ctd->init_deps_left_acquire() == 0) {
-            MethodTrainingData* mtd = ctd->method();
-            if (mtd->has_holder()) {
-              mtds.push(mtd);
-            }
+    if (AOTCompileEagerly) {
+      GrowableArray<CompileTrainingData*> ctds;
+      auto iterate_ctds = [&](CompileTrainingData* ctd) {
+        int init_deps_left = ctd->init_deps_left_acquire();
+        if (log_is_enabled(Trace, training)) {
+          LogStreamHandle(Trace, training) log;
+          log.print("   %s: ", (init_deps_left > 0 ? "---" : "+++")); ctd->print_on(&log);
+        }
+        if (init_deps_left == 0) {
+          // MethodTrainingData* mtd = ctd->method();
+          // if (mtd->has_holder()) {
+          //   mtds.push(mtd);
+          // }
+          ctds.push(ctd);
+        }
+      };
+
+      ktd->iterate_comp_deps(iterate_ctds);
+
+      if (UseNewCode) {
+        for (int i = 0; i < klass->methods()->length(); i++) {
+          const methodHandle mh(current, const_cast<Method*>(klass->methods()->at(i)));
+          MethodTrainingData* mtd = MethodTrainingData::find(mh);
+          if (mtd != nullptr && mtd->has_holder()) {
+            mtd->iterate_compiles(iterate_ctds);
           }
-        });
-       for (int i = 0; i < mtds.length(); i++) {
-          MethodTrainingData* mtd = mtds.at(i);
+        }
+      }
+      for (int i = 0; i < ctds.length(); i++) {
+        CompileTrainingData* ctd = ctds.at(i);
+        MethodTrainingData* mtd = ctd->method();
+        if (mtd->has_holder()) {
           const methodHandle mh(current, const_cast<Method*>(mtd->holder()));
+          if (log_is_enabled(Debug, training)) {
+            LogStreamHandle(Debug, training) log;
+            log.print("  %3d: Replay ", i); mtd->print_on(&log); log.cr();
+            log.print("              "); ctd->print_on(&log);
+          }
           CompilationPolicy::maybe_compile_early(mh, current);
         }
       }
@@ -211,20 +237,37 @@ void CompilationPolicy::replay_training_at_init(InstanceKlass* klass, JavaThread
 
 // For TrainingReplayQueue
 template<>
-void CompilationPolicyUtils::Queue<InstanceKlass>::print_on(outputStream* st) {
+void CompilationPolicyUtils::Queue<Metadata>::print_on(outputStream* st) {
   int pos = 0;
   for (QueueNode* cur = _head; cur != nullptr; cur = cur->next()) {
     ResourceMark rm;
-    InstanceKlass* ik = cur->value();
-    st->print_cr("%3d: " INTPTR_FORMAT " %s", ++pos, p2i(ik), ik->external_name());
+    Metadata* cur_md = cur->value();
+    st->print("%3d: " INTPTR_FORMAT, ++pos, p2i(cur_md));
+    if (cur_md->is_klass()) {
+      InstanceKlass* ik = InstanceKlass::cast((Klass*)cur_md);
+      st->print_raw(ik->external_name());
+    } else if (cur_md->is_method()) {
+      Method* m = (Method*)cur_md;
+      st->print_raw(m->name_and_sig_as_C_string());
+    }
+    st->cr();
   }
 }
 
 void CompilationPolicy::replay_training_at_init_loop(JavaThread* current) {
   while (!CompileBroker::is_compilation_disabled_forever()) {
-    InstanceKlass* ik = _training_replay_queue.pop(TrainingReplayQueue_lock, current);
-    if (ik != nullptr) {
-      replay_training_at_init_impl(ik, current);
+    Metadata* md = _training_replay_queue.pop(TrainingReplayQueue_lock, current);
+    if (md != nullptr) {
+      if (md->is_klass()) {
+        Klass* k = (Klass*)md;
+        guarantee(k->is_instance_klass(), "not an instance klass");
+        replay_training_at_init_impl(InstanceKlass::cast(k), current);
+      } else if (md->is_method()) {
+        Method* m = (Method*)md;
+        CompilationPolicy::force_recompilation_impl(m, current);
+      } else {
+        fatal("unknown task");
+      }
     }
   }
 }
@@ -483,12 +526,13 @@ void CompilationPolicy::print_training_data_on(outputStream* st,  const char* pr
       int mdo_backedges_start = md->backedge_count_start();
       st->print("%d(%d), %d(%d)", mdo_invocations, mdo_invocations_start, mdo_backedges, mdo_backedges_start);
     }
-    CompileTrainingData* ctd = mtd->last_toplevel_compile(CompLevel_full_optimization);
-    st->print(", deps=");
-    if (ctd == nullptr) {
-      st->print("null");
-    } else {
-      st->print("%d", ctd->init_deps_left_acquire());
+    CompileTrainingData* cur_ctd = mtd->last_toplevel_compile(cur_level);
+    if (cur_ctd != nullptr) {
+      st->print(", deps@%d=%d", cur_level, cur_ctd->init_deps_left_acquire());
+    }
+    CompileTrainingData* opt_ctd = mtd->last_toplevel_compile(CompLevel_full_optimization);
+    if (opt_ctd != nullptr) {
+      st->print(", deps@%d=%d", CompLevel_full_optimization, opt_ctd->init_deps_left_acquire());
     }
   }
 }
@@ -583,10 +627,10 @@ void CompilationPolicy::print_event_on(outputStream *st, EventType type, Method*
       st->print("in-queue");
     } else st->print("idle");
 
-    print_training_data_on(st, "", m, level);
-    if (inlinee_event) {
-      print_training_data_on(st, "inlinee ", im, level);
-    }
+  }
+  print_training_data_on(st, "", m, level);
+  if (inlinee_event) {
+    print_training_data_on(st, "inlinee ", im, level);
   }
   st->print_cr("]");
 
@@ -1221,7 +1265,7 @@ CompLevel CompilationPolicy::trained_transition_from_none(const methodHandle& me
   }
 
   bool training_has_profile = (mtd->final_profile() != nullptr);
-  if (mtd->saw_level(CompLevel_full_optimization) && !training_has_profile) {
+  if (mtd->highest_top_level() != CompLevel_simple && mtd->saw_level(CompLevel_full_optimization) && !training_has_profile) {
     return CompLevel_full_profile;
   }
 
@@ -1650,3 +1694,33 @@ void CompilationPolicy::method_back_branch_event(const methodHandle& mh, const m
   }
 }
 
+void CompilationPolicy::force_recompilation(nmethod* nm, JavaThread* current) {
+  assert(nm != nullptr, "");
+  if (TrainingData::have_data() && nm->is_aot() && nm->comp_level() == CompLevel_full_optimization &&
+      !nm->preloaded() && !nm->is_osr_method()) {
+    _training_replay_queue.push(nm->method(), TrainingReplayQueue_lock, current);
+  }
+}
+
+void CompilationPolicy::force_recompilation_impl(Method* m, JavaThread* current) {
+  nmethod* nm = m->code();
+  if (nm != nullptr && nm->is_aot() && nm->comp_level() == CompLevel_full_optimization &&
+      !nm->preloaded() && !nm->is_osr_method()) {
+    const methodHandle mh(current, const_cast<Method*>(nm->method()));
+    if (mh->method_data() == nullptr) {
+      CompilationPolicy::create_mdo(mh, current);
+    }
+    if (PrintTieredEvents) {
+      CompilationPolicy::print_event(CompilationPolicy::FORCE_RECOMPILE, mh(), mh(), InvocationEntryBci, CompLevel_full_optimization);
+    }
+    CompileBroker::compile_method(mh, InvocationEntryBci, CompLevel_full_optimization, 0,
+                                  true /*requires_online_compilation*/, CompileTask::Reason_MustBeCompiled, current);
+    if (current->has_pending_exception()) {
+      current->clear_pending_exception();
+    }
+  }
+}
+
+void CompilationPolicy::print_training_replay_queue_on(outputStream* st) {
+  _training_replay_queue.print_on(st);
+}

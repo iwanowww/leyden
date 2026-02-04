@@ -635,8 +635,8 @@ public:
       }
 
       uint count = cache->_load_header->entries_count();
-      uint* search_entries = (uint*)cache->addr(cache->_load_header->entries_offset()); // [id, index]
-      AOTCodeEntry* load_entries = (AOTCodeEntry*)(search_entries + 2 * count);
+      uint* search_entries = (uint*)cache->addr(cache->_load_header->search_table_offset()); // [id, index]
+      AOTCodeEntry* load_entries = (AOTCodeEntry*)cache->addr(cache->_load_header->entries_offset());
 
       for (uint i = 0; i < count; i++) {
         int index = search_entries[2*i + 1];

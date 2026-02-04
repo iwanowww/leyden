@@ -1779,6 +1779,9 @@ bool AOTCodeCache::load_nmethod(ciEnv* env, ciMethod* target, int entry_bci, Abs
   assert(entry_bci == InvocationEntryBci, "unexpected entry_bci=%d", entry_bci);
   TraceTime t1("Total time to load AOT code", &_t_totalLoad, enable_timers(), false);
   CompileTask* task = env->task();
+  if (UseNewCode && task->preload()) {
+    task->maybe_skip_preload();
+  }
   task->mark_aot_load_start(os::elapsed_counter());
   AOTCodeEntry* entry = task->aot_code_entry();
   bool preload = task->preload();
@@ -1789,9 +1792,9 @@ bool AOTCodeCache::load_nmethod(ciEnv* env, ciMethod* target, int entry_bci, Abs
     methodHandle method(THREAD, target->get_Method());
     const char* target_name = method->name_and_sig_as_C_string();
     uint id = AOTCacheAccess::convert_method_to_offset(method());
-    bool clinit_brs = entry->has_clinit_barriers();
+    bool clinit_brs = task->aot_code_entry()->has_clinit_barriers();
     log_info(aot, codecache, nmethod)("%d (L%d): %s nmethod '%s' (id: " UINT32_FORMAT_X_0 "%s)",
-                                      task->compile_id(), task->comp_level(), (preload ? "Preloading" : "Reading"),
+                                      task->compile_id(), task->comp_level(), (task->preload() ? "Preloading" : "Reading"),
                                       target_name, id, (clinit_brs ? ", has clinit barriers" : ""));
   }
   ReadingMark rdmk;
@@ -4079,8 +4082,7 @@ void AOTCodeCache::print_on(outputStream* st) {
 }
 
 void AOTCodeCache::print_unused_entries_on(outputStream* st) {
-  LogStreamHandle(Info, aot, codecache, init) info;
-  if (info.is_enabled()) {
+  if (is_on()) {
     AOTCodeCache::iterate([&](AOTCodeEntry* entry) {
       if (entry->is_nmethod() && !entry->is_loaded()) {
         MethodTrainingData* mtd = MethodTrainingData::find(methodHandle(Thread::current(), entry->method()));
@@ -4099,9 +4101,9 @@ void AOTCodeCache::print_unused_entries_on(outputStream* st) {
                     } else if ((uint)nm->comp_level() >= entry->comp_level()) {
                       return; // already online compiled and superseded by a more optimal method
                     }
-                    info.print("AOT Code Cache entry not loaded: ");
-                    ctd->print_on(&info);
-                    info.cr();
+                    st->print("AOT Code Cache entry not loaded: ");
+                    ctd->print_on(st);
+                    st->cr();
                   }
                 }
               });
@@ -4109,9 +4111,9 @@ void AOTCodeCache::print_unused_entries_on(outputStream* st) {
               // not yet initialized
             }
           } else {
-            info.print("AOT Code Cache entry doesn't have a holder: ");
-            mtd->print_on(&info);
-            info.cr();
+            st->print("AOT Code Cache entry doesn't have a holder: ");
+            mtd->print_on(st);
+            st->cr();
           }
         }
       }

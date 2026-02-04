@@ -281,9 +281,9 @@ void mutex_init() {
     MUTEX_DEFN(MethodCompileQueueSC2_lock    , PaddedMonitor, safepoint);
   }
   MUTEX_DEFN(TrainingData_lock               , PaddedMutex  , nosafepoint);
-  MUTEX_DEFN(TrainingReplayQueue_lock        , PaddedMonitor, safepoint);
+  MUTEX_DEFN(TrainingReplayQueue_lock        , PaddedMonitor, nosafepoint);
   MUTEX_DEFN(CompileStatistics_lock          , PaddedMutex  , safepoint);
-  MUTEX_DEFN(DirectivesStack_lock            , PaddedMutex  , nosafepoint);
+  MUTEX_DEFN(DirectivesStack_lock            , PaddedMutex  , nosafepoint-4);
 
   MUTEX_DEFN(VThreadTransition_lock          , PaddedMonitor, safepoint);
   MUTEX_DEFN(JvmtiVThreadSuspend_lock        , PaddedMutex,   nosafepoint-1);

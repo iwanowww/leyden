@@ -24,6 +24,7 @@
 
 #include "code/codeCache.hpp"
 #include "code/nmethod.hpp"
+#include "compiler/compilationPolicy.hpp"
 #include "gc/shared/barrierSet.hpp"
 #include "gc/shared/barrierSetAssembler.hpp"
 #include "gc/shared/barrierSetNMethod.hpp"
@@ -206,7 +207,12 @@ int BarrierSetNMethod::nmethod_stub_entry_barrier(address* return_address_ptr) {
   }
 
   if (may_enter) {
-    MACOS_AARCH64_ONLY(ThreadWXEnable wx(WXWrite, Thread::current()));
+    MACOS_AARCH64_ONLY(ThreadWXEnable wx(WXWrite, JavaThread::current()));
+    if (UseNewCode3 && nm->is_aot() && nm->comp_level() == CompLevel_full_optimization && !nm->preloaded() && !nm->used()) {
+      // Submit for recompilation
+      assert(!nm->is_osr_method(), "");
+      CompilationPolicy::force_recompilation(nm, JavaThread::current());
+    }
     nm->set_used();
   } else {
     log_trace(nmethod, barrier)("Deoptimizing nmethod: " PTR_FORMAT, p2i(nm));
