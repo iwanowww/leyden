@@ -484,6 +484,17 @@ static int training_compile_id(CompileTask* task) {
   return ctd->compile_id();
 }
 
+static bool compare_tasks(CompileTask* x, CompileTask* y) {
+  if (!x->preload() && y->preload()) {
+    return false; // AP4 has lower priority
+  }
+
+  // The earlier a method was compiled during training run, the hotter it was.
+  int x_id = training_compile_id(x);
+  int y_id = training_compile_id(y);
+  return (y_id < x_id);
+}
+
 /**
  * Get the next CompileTask from a CompileQueue
  */
@@ -511,7 +522,6 @@ CompileTask* CompileQueue::get(CompilerThread* thread) {
     if (UseNewCode4 && this == CompileBroker::_c2_compile_queue && CompileBroker::_c2_recompile_queue != nullptr) {
       assert(CompileBroker::_c2_compile_queue->lock() == CompileBroker::_c2_recompile_queue->lock(), "mismatch");
       CompileTask* max_task = nullptr;
-      int max_task_compile_id = -1;
 
       int total_count = 0;
       int purged_count = 0;
@@ -527,46 +537,50 @@ CompileTask* CompileQueue::get(CompilerThread* thread) {
           if (nm != nullptr) {
             if (!nm->is_aot()) {
               if (log.is_enabled()) {
-                log.print_raw("Skip compile task (nmethod is not aot): "); task->print(&log); nm->print_value_on(&log);
+                log.print("%s: Skip compile task (nmethod is not aot anymore): ", thread->name());
+                task->print(&log);
+                nm->print_on_with_msg(&log, nullptr);
               }
               purge = true;
-            } else if (nm->preloaded()) {
-              if (log.is_enabled()) {
-                log.print_raw("Skip compile task (nmethod is preloaded): "); task->print(&log); nm->print_value_on(&log);
-              }
-              purge = true;
-            } else if (nm->is_aot() && !nm->preloaded() && nm->comp_level() == CompLevel_full_optimization) {
-              int task_compile_id = training_compile_id(task);
-              if (max_task == nullptr || task_compile_id < max_task_compile_id) {
+            } else if (nm->is_aot() && nm->comp_level() == CompLevel_full_optimization) {
+              if (max_task == nullptr || compare_tasks(max_task, task)) {
                 max_task = task;
-                max_task_compile_id = task_compile_id;
               }
             }
           }
         } else {
           if (log.is_enabled()) {
-            log.print_raw("Skip compile task (queued for compilation): "); task->print(&log);
+            log.print("%s: Skip compile task (queued for compilation): ", thread->name()); task->print(&log);
           }
           purge = true;
         }
 
         if (purge) {
           purged_count++;
+          assert(task != max_task, "");
           CompileBroker::_c2_recompile_queue->remove_and_mark_stale(task);
         }
         task = next_task;
       }
-      CompileBroker::_c2_recompile_queue->purge_stale_tasks();
 
       if (max_task != nullptr) {
         LogStreamHandle(Info, aot, compilation) log;
         if (log.is_enabled()) {
-          log.print("Recompile task (training compile id: %d) (%d -%d): ",
-                    training_compile_id(max_task), total_count, purged_count);
+          log.print("%s: Recompile task (training compile id: %d) (%d -%d): ",
+                    thread->name(), training_compile_id(max_task), total_count, purged_count);
           max_task->print(&log);
+          nmethod* nm = max_task->method()->code();
+          if (nm != nullptr) {
+            nm->print_on_with_msg(&log, nullptr);
+          } else {
+            log.print_raw(" nm=null");
+          }
         }
         CompileBroker::_c2_recompile_queue->remove(max_task);
+        CompileBroker::_c2_recompile_queue->purge_stale_tasks(); // may temporarily release MCQ lock
         return max_task;
+      } else {
+        CompileBroker::_c2_recompile_queue->purge_stale_tasks(); // may temporarily release MCQ lock
       }
     }
 

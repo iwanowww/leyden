@@ -208,7 +208,7 @@ int BarrierSetNMethod::nmethod_stub_entry_barrier(address* return_address_ptr) {
 
   if (may_enter) {
     MACOS_AARCH64_ONLY(ThreadWXEnable wx(WXWrite, JavaThread::current()));
-    if (UseNewCode3 && nm->is_aot() && nm->comp_level() == CompLevel_full_optimization && !nm->preloaded() && !nm->used()) {
+    if (UseNewCode3 && nm->is_aot() && nm->comp_level() == CompLevel_full_optimization && !nm->used()) {
       // Submit for recompilation
       assert(!nm->is_osr_method(), "");
       CompilationPolicy::force_recompilation(nm, JavaThread::current());

@@ -1714,16 +1714,14 @@ void CompilationPolicy::method_back_branch_event(const methodHandle& mh, const m
 
 void CompilationPolicy::force_recompilation(nmethod* nm, JavaThread* current) {
   assert(nm != nullptr, "");
-  if (TrainingData::have_data() && nm->is_aot() && nm->comp_level() == CompLevel_full_optimization &&
-      !nm->preloaded() && !nm->is_osr_method()) {
+  if (TrainingData::have_data() && nm->is_aot() && nm->comp_level() == CompLevel_full_optimization && !nm->is_osr_method()) {
     _training_replay_queue.push(nm->method(), TrainingReplayQueue_lock, current);
   }
 }
 
 void CompilationPolicy::force_recompilation_impl(Method* m, JavaThread* current) {
   nmethod* nm = m->code();
-  if (nm != nullptr && nm->is_aot() && nm->comp_level() == CompLevel_full_optimization &&
-      !nm->preloaded() && !nm->is_osr_method()) {
+  if (nm != nullptr && nm->is_aot() && nm->comp_level() == CompLevel_full_optimization && !nm->is_osr_method()) {
     const methodHandle mh(current, const_cast<Method*>(nm->method()));
     if (mh->method_data() == nullptr) {
       CompilationPolicy::create_mdo(mh, current);
