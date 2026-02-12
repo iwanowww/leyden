@@ -701,7 +701,14 @@ public:
         _st->cr();
       });
     } else if (td->is_MethodTrainingData()) {
-      td->as_MethodTrainingData()->iterate_compiles([&](CompileTrainingData* ctd) {
+      MethodTrainingData* mtd = td->as_MethodTrainingData();
+      if (mtd->final_counters() != nullptr) {
+        mtd->final_counters()->print_data_on(_st);
+      }
+      if (mtd->final_profile() != nullptr) {
+        mtd->final_profile()->print_data_on(_st);
+      }
+      mtd->iterate_compiles([&](CompileTrainingData* ctd) {
         ResourceMark rm;
         _st->print_raw("  C ");
         ctd->print_on(_st);

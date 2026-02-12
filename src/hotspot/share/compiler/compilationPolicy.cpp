@@ -1144,6 +1144,19 @@ double CompilationPolicy::weight(Method* method) {
 
 // Apply heuristics and return true if x should be compiled before y
 bool CompilationPolicy::compare_methods(Method* x, Method* y) {
+  if (UseNewCode3) {
+    // Prioritize fresh online compilations over AOT code recompilations.
+    nmethod* nm_x = x->code();
+    if (nm_x != nullptr && nm_x->is_aot() && !nm_x->is_not_entrant()) {
+      nmethod* nm_y = y->code();
+      if (nm_y != nullptr && nm_y->is_aot() && !nm_y->is_not_entrant()) {
+        assert(nm_x->aot_code_entry() != nullptr && nm_y->aot_code_entry() != nullptr, "");
+        return (nm_x->aot_code_entry()->comp_id() < nm_y->aot_code_entry()->comp_id());
+      } else {
+        return false;
+      }
+    }
+  }
   if (x->highest_comp_level() > y->highest_comp_level()) {
     // recompilation after deopt
     return true;
@@ -1158,8 +1171,13 @@ bool CompilationPolicy::compare_methods(Method* x, Method* y) {
 
 bool CompilationPolicy::compare_tasks(CompileTask* x, CompileTask* y) {
   assert(!x->is_aot_load() && !y->is_aot_load(), "AOT code caching tasks are not expected here");
-  if (x->compile_reason() != y->compile_reason() && y->compile_reason() == CompileTask::Reason_MustBeCompiled) {
-    return true;
+  if (x->compile_reason() != y->compile_reason()) {
+    if (x->compile_reason() == CompileTask::Reason_Recompile) {
+      return true; // recompilation requests have the lowest priority
+    }
+    if (y->compile_reason() == CompileTask::Reason_MustBeCompiled) {
+      return true; // forced compilation requests have the highest priority
+    }
   }
   return false;
 }
@@ -1714,7 +1732,7 @@ void CompilationPolicy::force_recompilation_impl(Method* m, JavaThread* current)
       CompilationPolicy::print_event(CompilationPolicy::FORCE_RECOMPILE, mh(), mh(), InvocationEntryBci, CompLevel_full_optimization);
     }
     CompileBroker::compile_method(mh, InvocationEntryBci, CompLevel_full_optimization, 0,
-                                  true /*requires_online_compilation*/, CompileTask::Reason_MustBeCompiled, current);
+                                  true /*requires_online_compilation*/, CompileTask::Reason_Recompile, current);
     if (current->has_pending_exception()) {
       current->clear_pending_exception();
     }

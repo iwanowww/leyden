@@ -1076,11 +1076,13 @@ void ciEnv::make_code_usable(JavaThread* thread, ciMethod* target, bool preload,
     MutexLocker ml(NMethodState_lock, Mutex::_no_safepoint_check_flag);
     if (nm->make_in_use()) {
       BarrierSetNMethod* bs_nm = BarrierSet::barrier_set()->barrier_set_nmethod();
-      if (bs_nm != nullptr && !bs_nm->supports_entry_barrier(nm) && !bs_nm->is_armed(nm)) {
+      if (bs_nm != nullptr && bs_nm->supports_entry_barrier(nm) && !bs_nm->is_armed(nm)) {
         bs_nm->arm(nm);
         if (!bs_nm->is_armed(nm)) {
           log_info(init)("nmethod %d %d not armed", nm->compile_id(), nm->comp_level());
         }
+      } else if (UseNewCode3 && bs_nm != nullptr && !bs_nm->supports_entry_barrier(nm)) {
+        log_warning(aot)("nmethod %d %d lacks entry barrier support", nm->compile_id(), nm->comp_level());
       }
 
       if (preload) {

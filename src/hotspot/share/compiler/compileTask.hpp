@@ -67,6 +67,7 @@ class CompileTask : public CHeapObj<mtCompiler> {
       Reason_MustBeCompiled,   // Used for -Xcomp or AlwaysCompileLoopMethods (see CompilationPolicy::must_be_compiled())
       Reason_Bootstrap,        // JVMCI bootstrap
       Reason_Preload,          // pre-load AOT code
+      Reason_Recompile,
       Reason_Precompile,
       Reason_PrecompileForPreload,
       Reason_Count
@@ -83,6 +84,7 @@ class CompileTask : public CHeapObj<mtCompiler> {
       "must_be_compiled",
       "bootstrap",
       "preload",
+      "recompile",
       "precompile",
       "precompile_for_preload",
     };
@@ -165,6 +167,7 @@ class CompileTask : public CHeapObj<mtCompiler> {
   CodeSection::csize_t nm_total_size() { return _nm_total_size; }
   void         set_nm_total_size(CodeSection::csize_t size) { _nm_total_size = size; }
   bool         preload() const                   { return (_compile_reason == Reason_Preload); }
+  bool         is_recompilation() const          { return (_compile_reason == Reason_Recompile); }
   bool         can_become_stale() const          {
     switch (_compile_reason) {
       case Reason_BackedgeCount:

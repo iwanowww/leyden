@@ -991,6 +991,7 @@ void AOTMetaspace::dump_static_archive(TRAPS) {
       } else {
         tty->print_cr("AOTCache creation is complete: %s " INT64_FORMAT " bytes", AOTCache, (int64_t)(st.st_size));
       }
+      ostream_exit(); // finalize VM log
       vm_direct_exit(0);
     }
   }

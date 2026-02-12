@@ -209,6 +209,7 @@ CompileQueue* CompileBroker::_c2_compile_queue     = nullptr;
 CompileQueue* CompileBroker::_c1_compile_queue     = nullptr;
 CompileQueue* CompileBroker::_ac1_compile_queue    = nullptr;
 CompileQueue* CompileBroker::_ac2_compile_queue    = nullptr;
+CompileQueue* CompileBroker::_c2_recompile_queue   = nullptr;
 
 bool compileBroker_init() {
   if (LogEvents) {
@@ -359,9 +360,12 @@ void CompileQueue::add(CompileTask* task) {
     _peak_size = _size;
   }
 
-  // Mark the method as being in the compile queue.
-  task->method()->set_queued_for_compilation();
-
+  if (task->is_recompilation()) {
+    // Don't mark for compilation yet.
+  } else {
+    // Mark the method as being in the compile queue.
+    task->method()->set_queued_for_compilation();
+  }
   task->mark_queued(os::elapsed_counter());
 
   if (CIPrintCompileQueue) {
@@ -386,6 +390,7 @@ void CompileQueue::add(CompileTask* task) {
 void CompileQueue::add_pending(CompileTask* task) {
   assert(_lock->owned_by_self() == false, "must NOT own lock");
   assert(UseLockFreeCompileQueues, "");
+  assert(!task->is_recompilation(), "");
   task->method()->set_queued_for_compilation();
   _queue.push(*task);
   // FIXME: additional coordination needed? e.g., is it possible for compiler thread to block w/o processing pending tasks?
@@ -400,6 +405,7 @@ static bool process_pending(CompileTask* task) {
   if (task->is_unloaded()) {
     return true; // unloaded
   }
+  assert(!task->is_recompilation(), "");
   task->method()->set_queued_for_compilation(); // FIXME
   if (task->method()->pending_queue_processed()) {
     return true; // already queued
@@ -469,6 +475,15 @@ void CompileQueue::delete_all() {
   _lock->notify_all();
 }
 
+static int training_compile_id(CompileTask* task) {
+  methodHandle mh(JavaThread::current(), task->method());
+  MethodTrainingData* mtd = MethodTrainingData::find(mh);
+  assert(mtd != nullptr, "");
+  CompileTrainingData* ctd = mtd->last_toplevel_compile(CompLevel_full_optimization);
+  assert(ctd != nullptr, "");
+  return ctd->compile_id();
+}
+
 /**
  * Get the next CompileTask from a CompileQueue
  */
@@ -491,6 +506,68 @@ CompileTask* CompileQueue::get(CompilerThread* thread) {
     // Exit loop if compilation is disabled forever
     if (CompileBroker::is_compilation_disabled_forever()) {
       return nullptr;
+    }
+
+    if (UseNewCode4 && this == CompileBroker::_c2_compile_queue && CompileBroker::_c2_recompile_queue != nullptr) {
+      assert(CompileBroker::_c2_compile_queue->lock() == CompileBroker::_c2_recompile_queue->lock(), "mismatch");
+      CompileTask* max_task = nullptr;
+      int max_task_compile_id = -1;
+
+      int total_count = 0;
+      int purged_count = 0;
+      for (CompileTask* task = CompileBroker::_c2_recompile_queue->first(); task != nullptr;) {
+        LogStreamHandle(Info, aot, compilation) log;
+
+        CompileTask* next_task = task->next();
+        total_count++;
+
+        bool purge = false;
+        if (!task->method()->queued_for_compilation()) {
+          nmethod* nm = task->method()->code();
+          if (nm != nullptr) {
+            if (!nm->is_aot()) {
+              if (log.is_enabled()) {
+                log.print_raw("Skip compile task (nmethod is not aot): "); task->print(&log); nm->print_value_on(&log);
+              }
+              purge = true;
+            } else if (nm->preloaded()) {
+              if (log.is_enabled()) {
+                log.print_raw("Skip compile task (nmethod is preloaded): "); task->print(&log); nm->print_value_on(&log);
+              }
+              purge = true;
+            } else if (nm->is_aot() && !nm->preloaded() && nm->comp_level() == CompLevel_full_optimization) {
+              int task_compile_id = training_compile_id(task);
+              if (max_task == nullptr || task_compile_id < max_task_compile_id) {
+                max_task = task;
+                max_task_compile_id = task_compile_id;
+              }
+            }
+          }
+        } else {
+          if (log.is_enabled()) {
+            log.print_raw("Skip compile task (queued for compilation): "); task->print(&log);
+          }
+          purge = true;
+        }
+
+        if (purge) {
+          purged_count++;
+          CompileBroker::_c2_recompile_queue->remove_and_mark_stale(task);
+        }
+        task = next_task;
+      }
+      CompileBroker::_c2_recompile_queue->purge_stale_tasks();
+
+      if (max_task != nullptr) {
+        LogStreamHandle(Info, aot, compilation) log;
+        if (log.is_enabled()) {
+          log.print("Recompile task (training compile id: %d) (%d -%d): ",
+                    training_compile_id(max_task), total_count, purged_count);
+          max_task->print(&log);
+        }
+        CompileBroker::_c2_recompile_queue->remove(max_task);
+        return max_task;
+      }
     }
 
     AbstractCompiler* compiler = thread->compiler();
@@ -632,9 +709,20 @@ void CompileQueue::mark_on_stack() {
 }
 
 
-CompileQueue* CompileBroker::compile_queue(int comp_level, bool is_aot) {
-  if (is_c2_compile(comp_level)) return ((is_aot  && (_ac_count > 0)) ? _ac2_compile_queue : _c2_compile_queue);
-  if (is_c1_compile(comp_level)) return ((is_aot && (_ac_count > 0)) ? _ac1_compile_queue : _c1_compile_queue);
+CompileQueue* CompileBroker::compile_queue(int comp_level, bool is_aot, bool is_recompile) {
+  if (is_c2_compile(comp_level)) {
+    if (is_recompile) {
+      return _c2_recompile_queue;
+    } else if (is_aot && (_ac_count > 0)) {
+      return _ac2_compile_queue;
+    } else {
+      return _c2_compile_queue;
+    }
+  }
+  assert(!is_recompile, "only C2 for now");
+  if (is_c1_compile(comp_level)) {
+    return ((is_aot && (_ac_count > 0)) ? _ac1_compile_queue : _c1_compile_queue);
+  }
   return nullptr;
 }
 
@@ -665,6 +753,9 @@ void CompileBroker::print_compile_queues(outputStream* st) {
   }
   if (_ac2_compile_queue != nullptr) {
     _ac2_compile_queue->print(st);
+  }
+  if (_c2_recompile_queue != nullptr) {
+    _c2_recompile_queue->print(st);
   }
 }
 
@@ -1101,6 +1192,7 @@ void CompileBroker::init_compiler_threads() {
     }
     if (_c2_count > 0) { // C2 is present
       _ac2_compile_queue  = new CompileQueue("C2 AOT code compile queue", MethodCompileQueueSC2_lock);
+      _c2_recompile_queue = new CompileQueue("C2 AOT code recompile queue", MethodCompileQueueC2_lock);
     }
     _ac_objects = NEW_C_HEAP_ARRAY(jobject, _ac_count, mtCompiler);
     _ac_logs = NEW_C_HEAP_ARRAY(CompileLog*, _ac_count, mtCompiler);
@@ -1399,14 +1491,15 @@ void CompileBroker::compile_method_base(const methodHandle& method,
 
   AOTCodeEntry* aot_code_entry = find_aot_code_entry(method, osr_bci, comp_level, compile_reason, requires_online_compilation);
   bool is_aot = (aot_code_entry != nullptr);
+  bool is_aot_recompilation = (compile_reason == CompileTask::Reason_Recompile);
 
   // Outputs from the following MutexLocker block:
   CompileTask* task = nullptr;
-  CompileQueue* queue = compile_queue(comp_level, is_aot);
+  CompileQueue* queue = compile_queue(comp_level, is_aot, is_aot_recompilation);
 
   // Acquire our lock.
   {
-    ConditionalMutexLocker locker(thread, queue->lock(), !UseLockFreeCompileQueues);
+    ConditionalMutexLocker locker(thread, queue->lock(), !UseLockFreeCompileQueues || is_aot_recompilation);
 
     // Make sure the method has not slipped into the queues since
     // last we checked; note that those checks were "fast bail-outs".
@@ -1516,7 +1609,9 @@ void CompileBroker::compile_method_base(const methodHandle& method,
       queue = is_c1_compile(comp_level) ? _ac1_compile_queue : _ac2_compile_queue;
     }
 
-    if (UseLockFreeCompileQueues) {
+    if (is_aot_recompilation) {
+      queue->add(task);
+    } else if (UseLockFreeCompileQueues) {
       assert(queue->lock()->owned_by_self() == false, "");
       queue->add_pending(task);
     } else {
@@ -1688,6 +1783,7 @@ nmethod* CompileBroker::compile_method(const methodHandle& method, int osr_bci,
     bool is_blocking = ReplayCompiles                                             ||
                        !directive->BackgroundCompilationOption                    ||
                        (PreloadBlocking && (compile_reason == CompileTask::Reason_Preload));
+                       // FIXME: recompilation requests should not block
     compile_method_base(method, osr_bci, comp_level, hot_count, compile_reason, requires_online_compilation, is_blocking, THREAD);
   }
 
@@ -3093,6 +3189,7 @@ void CompileBroker::print_statistics_on(outputStream* st) {
   print_queue_info(st, _c2_compile_queue);
   print_queue_info(st, _ac1_compile_queue);
   print_queue_info(st, _ac2_compile_queue);
+  print_queue_info(st, _c2_recompile_queue);
 }
 
 void CompileBroker::print_times(bool per_compiler, bool aggregate) {

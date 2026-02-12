@@ -177,6 +177,7 @@ public:
 class CompileBroker: AllStatic {
  friend class Threads;
  friend class CompileTaskWrapper;
+ friend class CompileQueue;
 
  public:
   enum {
@@ -216,6 +217,7 @@ class CompileBroker: AllStatic {
   static CompileQueue* _c1_compile_queue;
   static CompileQueue* _ac1_compile_queue;
   static CompileQueue* _ac2_compile_queue;
+  static CompileQueue* _c2_recompile_queue;
 
   // performance counters
   static PerfCounter* _perf_total_compilation;
@@ -319,7 +321,7 @@ private:
                                   bool blocking,
                                   Thread* thread);
 
-  static CompileQueue* compile_queue(int comp_level, bool is_aot);
+  static CompileQueue* compile_queue(int comp_level, bool is_aot, bool is_recompile);
   static bool init_compiler_runtime();
   static void shutdown_compiler_runtime(AbstractCompiler* comp, CompilerThread* thread);
 
@@ -344,8 +346,8 @@ public:
                                       CompileTask::CompileReason compile_reason);
   static bool compilation_is_in_queue(const methodHandle& method);
   static void print_compile_queues(outputStream* st);
-  static int queue_size(int comp_level, bool is_aot = false) {
-    CompileQueue *q = compile_queue(comp_level, is_aot);
+  static int queue_size(int comp_level, bool is_aot = false, bool is_recompile = false) {
+    CompileQueue *q = compile_queue(comp_level, is_aot, is_recompile);
     return q != nullptr ? q->size() : 0;
   }
   static void compilation_init(JavaThread* THREAD);
